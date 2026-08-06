@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: prism
+      POSTGRES_PASSWORD: prism
+      POSTGRES_DB: prism
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prism -d prism"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://prism:prism@db:5432/prism
+      - FRONTEND_ORIGINS=["http://localhost:8001","http://localhost:8000"]
+      - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID}
+      - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET}
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ./prism.html:/usr/share/nginx/html/prism.html:ro
+    ports:
+      - "8001:80"
+
+volumes:
+  postgres_data:

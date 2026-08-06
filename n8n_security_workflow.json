@@ -1,0 +1,482 @@
+{
+  "name": "Prism Security Detective 24/7",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */12 * * *"
+            }
+          ]
+        }
+      },
+      "id": "trigger",
+      "name": "Schedule - 24/7 Detective",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const runId = 'scan_' + Date.now().toString(36);\nreturn [{ json: { run_id: runId, status: 'RUNNING', started_at: new Date().toISOString() } }];"
+      },
+      "id": "agent",
+      "name": "Security Agent - Start Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 260]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE security_runs SET status='STALE', finished_at=now() WHERE status='RUNNING';\nINSERT INTO security_runs (run_id, status, started_at) VALUES ('{{ $json.run_id }}','RUNNING','{{ $json.started_at }}') ON CONFLICT (run_id) DO NOTHING;",
+        "options": {}
+      },
+      "id": "logstart",
+      "name": "Log Start + Reset Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [400, 260],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Prism DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, account_id, from_addr, from_name, subject, snippet, body, att_count, folder, received_at, is_read FROM messages WHERE folder IN ('inbox','unread') ORDER BY received_at DESC LIMIT 1000;",
+        "options": {}
+      },
+      "id": "bot1load",
+      "name": "Bot 1 - Load Emails",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [600, 100],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Prism DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const emails = $input.all();\nconst flagged = [];\nfor (const { json: m } of emails) {\n  const subject = (m.subject || '').toLowerCase();\n  const body = (m.body || '').toLowerCase().slice(0, 3000);\n  const from = (m.from_addr || '').toLowerCase();\n  const flags = [];\n  if (/(urgent|verify your account|suspicious login|password expired|unusual activity|wire transfer|gift card)/.test(subject + ' ' + body)) flags.push('social-engineering');\n  if (/http|https:\\/\\//.test(body)) flags.push('has-link');\n  if ((m.att_count || 0) > 2) flags.push('many-attachments');\n  if (/noreply|no-reply|security@|support@/.test(from) && /password|login|account/.test(subject)) flags.push('spoofed-sender');\n  if (flags.length) flagged.push({ json: { id: m.id, from_addr: m.from_addr, subject: m.subject, flags, risk: flags.length > 1 ? 'high' : 'medium', flagged: true } });\n}\nreturn flagged.length ? flagged : [{ json: { id: 0, flagged: false } }];"
+      },
+      "id": "bot1detect",
+      "name": "Bot 1 - Detect Threats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE messages SET folder='quarantine', is_read=true WHERE id = {{ $json.id }};",
+        "options": {}
+      },
+      "id": "bot1quar",
+      "name": "Bot 1 - Quarantine Flagged",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1000, 40],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Prism DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const flagged = $input.all().filter(i => i.json.flagged === true);\nconst scanned = $('Bot 1 - Load Emails').all().length;\nreturn [{ json: { emails_scanned: scanned, emails_flagged: flagged.length, flagged_ids: flagged.map(i => i.json.id) } }];"
+      },
+      "id": "bot1sum",
+      "name": "Bot 1 - Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 160]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, email, provider, password_hash, created_at FROM accounts;",
+        "options": {}
+      },
+      "id": "bot2load",
+      "name": "Bot 2 - Load Accounts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [600, 420],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Prism DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const run = async () => {\n  const accounts = $input.all();\n  const HIBP_KEY = $env.HIBP_API_KEY || '';\n  const results = [];\n  const seen = new Set();\n  const check = async (path) => {\n    try {\n      const res = await fetch('https://haveibeenpwned.com/api/v3/' + path, {\n        headers: { 'hibp-api-key': HIBP_KEY, 'user-agent': 'prism-security-scanner/1.0' }\n      });\n      if (res.status === 404) return null;\n      if (res.status === 429) { await new Promise(r => setTimeout(r, 5000)); return check(path); }\n      if (!res.ok) return null;\n      return await res.json();\n    } catch (e) { return null; }\n  };\n  for (const { json: a } of accounts) {\n    const email = (a.email || '').trim().toLowerCase();\n    if (!email || seen.has(email)) continue;\n    seen.add(email);\n    const breaches = [], pastes = [];\n    const b = await check('breachedaccount/' + encodeURIComponent(email));\n    if (Array.isArray(b)) b.forEach(x => breaches.push(x.Name || x.Title));\n    const p = await check('pasteaccount/' + encodeURIComponent(email));\n    if (Array.isArray(p)) p.forEach(x => pastes.push((x.Source || '') + ':' + (x.Id || '')));\n    results.push({ json: { account_id: a.id, email, provider: a.provider, breaches, breach_count: breaches.length, pastes, paste_count: pastes.length, leaked: breaches.length > 0 || pastes.length > 0 } });\n  }\n  return results;\n};\nreturn run();"
+      },
+      "id": "bot2hibp",
+      "name": "Bot 2 - HIBP Dark Web Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 420]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE accounts SET refresh_token=NULL, access_token=NULL, token_expiry=NULL, last_sync_at=NULL WHERE email='{{ $json.email }}' AND (refresh_token IS NOT NULL OR access_token IS NOT NULL);",
+        "options": {}
+      },
+      "id": "bot2protect",
+      "name": "Bot 2 - Protect Leaked Creds",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1000, 380],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Prism DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const run = async () => {\n  const items = $input.all();\n  const out = [];\n  const rand = () => Math.random().toString(36).slice(2, 8);\n  for (const { json: a } of items) {\n    if (a.leaked) {\n      for (let i = 0; i < 2; i++) {\n        out.push({ json: { email: 'decoy_' + rand() + '_' + (a.email.split('@')[0]) + '@honeypot.prism.local', password: 'H0ney!' + rand() + 'Pots', tag: 'decoy-for-' + a.email } });\n      }\n    }\n  }\n  return out.length ? out : [{ json: { email: 'none', password: 'none', tag: 'none' } }];\n};\nreturn run();"
+      },
+      "id": "bot2honeypot",
+      "name": "Bot 2 - Deploy Honeypot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 460]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO honeypot_credentials (email, password, tag, created_at) VALUES ('{{ $json.email }}','{{ $json.password }}','{{ $json.tag }}', now()) ON CONFLICT (email) DO NOTHING;",
+        "options": {}
+      },
+      "id": "bot2honeyinsert",
+      "name": "Bot 2 - Insert Honeypot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1200, 460],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Prism DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst leakedAccounts = items.filter(i => i.json.leaked);\nconst total = items.reduce((s, i) => s + (i.json.breach_count || 0) + (i.json.paste_count || 0), 0);\nreturn [{ json: { accounts_checked: items.length, leaked_accounts: leakedAccounts.length, leak_details: leakedAccounts.map(i => ({ email: i.json.email, breaches: i.json.breaches, pastes: i.json.pastes })), leaks_found: total } }];"
+      },
+      "id": "bot2sum",
+      "name": "Bot 2 - Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 540]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "meet",
+      "name": "Upside + Downside Meet",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1300, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const run = async () => {\n  const items = $input.all();\n  const bot2 = items.find(i => i.json.accounts_checked !== undefined) || { json: {} };\n  const leaked = bot2.json.leak_details || [];\n  const HIBP_KEY = $env.HIBP_API_KEY || '';\n  const still = [];\n  for (const l of leaked) {\n    try {\n      const res = await fetch('https://haveibeenpwned.com/api/v3/breachedaccount/' + encodeURIComponent(l.email), {\n        headers: { 'hibp-api-key': HIBP_KEY, 'user-agent': 'prism-security-scanner/1.0' }\n      });\n      if (res.status === 200) {\n        const b = await res.json();\n        const names = (b || []).map(x => x.Name || x.Title);\n        const fresh = names.filter(n => !(l.breaches || []).includes(n));\n        if (fresh.length) still.push({ email: l.email, new_breaches: fresh });\n      }\n    } catch (e) {}\n  }\n  return [{ json: { leaks_persist: still.length, still_leaking: still } }];\n};\nreturn run();"
+      },
+      "id": "recheck",
+      "name": "Re-check Bot - Verify Protection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const recheck = $input.first().json;\nconst bot1 = $('Bot 1 - Summarize').first().json;\nconst bot2 = $('Bot 2 - Summarize').first().json;\nconst runId = $('Security Agent - Start Run').first().json.run_id;\nconst status = recheck.leaks_persist > 0 ? 'LEAKS_PERSIST' : 'COMPLETED';\nconst report = JSON.stringify({ emails_scanned: bot1.emails_scanned || 0, emails_flagged: bot1.emails_flagged || 0, accounts_checked: bot2.accounts_checked || 0, leaks_found: bot2.leaks_found || 0, leaks_persist: recheck.leaks_persist || 0, still_leaking: recheck.still_leaking || [], finished_at: new Date().toISOString() });\nreturn [{ json: { run_id: runId, status, emails_scanned: bot1.emails_scanned || 0, emails_flagged: bot1.emails_flagged || 0, accounts_checked: bot2.accounts_checked || 0, leaks_found: bot2.leaks_found || 0, leaks_persist: recheck.leaks_persist || 0, report } }];"
+      },
+      "id": "report",
+      "name": "Report & Build Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 260]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE security_runs SET status='{{ $json.status }}', finished_at=now(), emails_scanned={{ $json.emails_scanned }}, emails_flagged={{ $json.emails_flagged }}, accounts_checked={{ $json.accounts_checked }}, leaks_found={{ $json.leaks_found }}, leaks_persist={{ $json.leaks_persist }}, report='{{ $json.report }}' WHERE run_id='{{ $json.run_id }}';",
+        "options": {}
+      },
+      "id": "logfinal",
+      "name": "Log Final Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1900, 260],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Prism DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.leaks_persist }}",
+              "rightValue": "0",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "ifleak",
+      "name": "IF Leaks Persist?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2100, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL || 'http://localhost:8000/api/security/alert' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ run_id: $json.run_id, status: 'ESCALATED', report: $json.report }) }}",
+        "options": {}
+      },
+      "id": "takeover",
+      "name": "Takeover - Escalate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2300, 160]
+    },
+    {
+      "parameters": {},
+      "id": "allclear",
+      "name": "All Clear",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2300, 360]
+    }
+  ],
+  "connections": {
+    "Schedule - 24/7 Detective": {
+      "main": [
+        [
+          {
+            "node": "Security Agent - Start Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Security Agent - Start Run": {
+      "main": [
+        [
+          {
+            "node": "Log Start + Reset Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Start + Reset Status": {
+      "main": [
+        [
+          {
+            "node": "Bot 1 - Load Emails",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bot 2 - Load Accounts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot 1 - Load Emails": {
+      "main": [
+        [
+          {
+            "node": "Bot 1 - Detect Threats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot 1 - Detect Threats": {
+      "main": [
+        [
+          {
+            "node": "Bot 1 - Quarantine Flagged",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bot 1 - Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot 2 - Load Accounts": {
+      "main": [
+        [
+          {
+            "node": "Bot 2 - HIBP Dark Web Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot 2 - HIBP Dark Web Check": {
+      "main": [
+        [
+          {
+            "node": "Bot 2 - Protect Leaked Creds",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bot 2 - Deploy Honeypot",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bot 2 - Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot 2 - Deploy Honeypot": {
+      "main": [
+        [
+          {
+            "node": "Bot 2 - Insert Honeypot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot 1 - Summarize": {
+      "main": [
+        [
+          {
+            "node": "Upside + Downside Meet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot 2 - Summarize": {
+      "main": [
+        [
+          {
+            "node": "Upside + Downside Meet",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Upside + Downside Meet": {
+      "main": [
+        [
+          {
+            "node": "Re-check Bot - Verify Protection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-check Bot - Verify Protection": {
+      "main": [
+        [
+          {
+            "node": "Report & Build Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report & Build Log": {
+      "main": [
+        [
+          {
+            "node": "Log Final Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Final Status": {
+      "main": [
+        [
+          {
+            "node": "IF Leaks Persist?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Leaks Persist?": {
+      "main": [
+        [
+          {
+            "node": "Takeover - Escalate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All Clear",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

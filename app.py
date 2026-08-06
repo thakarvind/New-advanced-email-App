@@ -2447,6 +2447,7 @@ if os.environ.get("VERCEL"):
     # Vercel boots this module directly (FastAPI framework preset). Serve the
     # frontend + assets too — the mangum api/index.py path may never run.
     from pathlib import Path
+    from fastapi.responses import FileResponse
     _ROOT = Path(__file__).resolve().parent
     _ALLOWED_STATIC = {
         "prism.html", "boot-splash.png", "boot-logo.jpg", "splash.mp4",

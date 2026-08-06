@@ -28,7 +28,7 @@ try:
     from fastapi import HTTPException
     from fastapi.responses import FileResponse
     from mangum import Mangum
-    from app import Base, app, engine
+    from app import Base, app as _fastapi, engine
 except Exception as exc:
     import traceback
     print(traceback.format_exc(), file=sys.stderr)
@@ -73,10 +73,10 @@ else:
         "Screenshot 2026-08-02 213509.png",
     }
 
-    @app.get("/{path:path}", include_in_schema=False)
+    @_fastapi.get("/{path:path}", include_in_schema=False)
     async def _serve_static(path: str) -> FileResponse:
         if path in _ALLOWED_STATIC and (ROOT / path).is_file():
             return FileResponse(ROOT / path)
         raise HTTPException(status_code=404, detail="Not found")
 
-    handler = Mangum(app)
+    handler = Mangum(_fastapi)

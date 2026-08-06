@@ -30,43 +30,53 @@ try:
     from mangum import Mangum
     from app import Base, app, engine
 except Exception as exc:
+    import traceback
+    print(traceback.format_exc(), file=sys.stderr)
     print(f"[prism] FATAL import failure: {exc!r}", file=sys.stderr)
-    raise
 
-# Vercel does not run FastAPI lifespan events, so tables are created here at
-# cold start instead of in the lifespan handler. A DB failure must NOT crash
-# the function: the API stays up and /healthz reports db:false.
-async def _create_tables() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    def handler(event, context):
+        """Fallback: surface the import traceback in the HTTP response body."""
+        body = "PRISM IMPORT FAILURE\n" + traceback.format_exc()
+        return {
+            "statusCode": 500,
+            "body": body,
+            "headers": {"Content-Type": "text/plain; charset=utf-8"},
+        }
 
-try:
-    asyncio.run(_create_tables())
-    print("[prism] cold start: tables ready", file=sys.stderr)
-except Exception as exc:
-    print(f"[prism] cold start: table creation FAILED — {exc!r}", file=sys.stderr)
+else:
+    # Vercel does not run FastAPI lifespan events, so tables are created here at
+    # cold start instead of in the lifespan handler. A DB failure must NOT crash
+    # the function: the API stays up and /healthz reports db:false.
+    async def _create_tables() -> None:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
-print(f"[prism] cold start: vercel={os.environ.get('VERCEL')!r} db={_db_url[:60]!r}", file=sys.stderr)
+    try:
+        asyncio.run(_create_tables())
+        print("[prism] cold start: tables ready", file=sys.stderr)
+    except Exception as exc:
+        print(f"[prism] cold start: table creation FAILED — {exc!r}", file=sys.stderr)
 
-# Serve the frontend and its assets from the function. Only whitelisted files
-# are exposed — never the whole project root (.env etc. stays private).
-ROOT = Path(__file__).resolve().parent
-_ALLOWED_STATIC = {
-    "prism.html",
-    "boot-splash.png",
-    "boot-logo.jpg",
-    "splash.mp4",
-    "app icon neon.jpg",
-    "Screenshot 2026-08-02 213509 borderless.png",
-    "Screenshot 2026-08-02 213509.png",
-}
+    print(f"[prism] cold start: vercel={os.environ.get('VERCEL')!r} db={_db_url[:60]!r}", file=sys.stderr)
 
+    # Serve the frontend and its assets from the function. Only whitelisted files
+    # are exposed — never the whole project root (.env etc. stays private).
+    ROOT = Path(__file__).resolve().parent
 
-@app.get("/{path:path}", include_in_schema=False)
-async def _serve_static(path: str) -> FileResponse:
-    if path in _ALLOWED_STATIC and (ROOT / path).is_file():
-        return FileResponse(ROOT / path)
-    raise HTTPException(status_code=404, detail="Not found")
+    _ALLOWED_STATIC = {
+        "prism.html",
+        "boot-splash.png",
+        "boot-logo.jpg",
+        "splash.mp4",
+        "app icon neon.jpg",
+        "Screenshot 2026-08-02 213509 borderless.png",
+        "Screenshot 2026-08-02 213509.png",
+    }
 
+    @app.get("/{path:path}", include_in_schema=False)
+    async def _serve_static(path: str) -> FileResponse:
+        if path in _ALLOWED_STATIC and (ROOT / path).is_file():
+            return FileResponse(ROOT / path)
+        raise HTTPException(status_code=404, detail="Not found")
 
-handler = Mangum(app)
+    handler = Mangum(app)

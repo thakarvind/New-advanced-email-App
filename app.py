@@ -2343,7 +2343,10 @@ log("control deck ready · api "+location.host);if(tok())log("session restored f
 
 page_router = APIRouter(tags=["deck"])
 @page_router.get("/", response_class=HTMLResponse, include_in_schema=False)
-def deck(): return DECK_HTML
+def deck():
+    if os.environ.get("VERCEL"):
+        return RedirectResponse("/prism.html")
+    return DECK_HTML
 
 # ============================ SECURITY HEADERS ============================
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

@@ -7,19 +7,31 @@ cold start). For real persistence set DATABASE_URL (e.g. a Neon Postgres URL).
 import os
 
 _on_vercel = bool(os.environ.get("VERCEL"))
+
+# Guard 1: DATABASE_URL must be a real DB URL. A bare string (e.g. the app's
+# own URL pasted into the dashboard) would crash create_async_engine at import.
 _db_url = os.environ.get("DATABASE_URL", "")
-if _on_vercel and (not _db_url or "localhost" in _db_url):
+if _on_vercel and (not _db_url or not _db_url.startswith(("postgres", "sqlite"))):
     os.environ["DATABASE_URL"] = "sqlite+aiosqlite:////tmp/prism.db"
+
+# Guard 2: FRONTEND_ORIGINS must be a JSON list. A plain string (a common
+# dashboard mistake) would make pydantic-settings raise at import.
+_origins = os.environ.get("FRONTEND_ORIGINS", "")
+if _origins and not _origins.strip().startswith("["):
+    os.environ["FRONTEND_ORIGINS"] = '["' + _origins.replace('"', '\\"') + '"]'
 
 import asyncio
 import sys
 from pathlib import Path
 
-from fastapi import HTTPException
-from fastapi.responses import FileResponse
-from mangum import Mangum
-
-from app import Base, app, engine
+try:
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from mangum import Mangum
+    from app import Base, app, engine
+except Exception as exc:
+    print(f"[prism] FATAL import failure: {exc!r}", file=sys.stderr)
+    raise
 
 # Vercel does not run FastAPI lifespan events, so tables are created here at
 # cold start instead of in the lifespan handler. A DB failure must NOT crash

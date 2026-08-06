@@ -12,6 +12,7 @@ if _on_vercel and (not _db_url or "localhost" in _db_url):
     os.environ["DATABASE_URL"] = "sqlite+aiosqlite:////tmp/prism.db"
 
 import asyncio
+import sys
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -21,12 +22,19 @@ from mangum import Mangum
 from app import Base, app, engine
 
 # Vercel does not run FastAPI lifespan events, so tables are created here at
-# cold start instead of in the lifespan handler.
+# cold start instead of in the lifespan handler. A DB failure must NOT crash
+# the function: the API stays up and /healthz reports db:false.
 async def _create_tables() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-asyncio.run(_create_tables())
+try:
+    asyncio.run(_create_tables())
+    print("[prism] cold start: tables ready", file=sys.stderr)
+except Exception as exc:
+    print(f"[prism] cold start: table creation FAILED — {exc!r}", file=sys.stderr)
+
+print(f"[prism] cold start: vercel={os.environ.get('VERCEL')!r} db={_db_url[:60]!r}", file=sys.stderr)
 
 # Serve the frontend and its assets from the function. Only whitelisted files
 # are exposed — never the whole project root (.env etc. stays private).

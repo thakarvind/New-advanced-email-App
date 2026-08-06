@@ -5,6 +5,16 @@ Tables are auto-created on startup (no Alembic step). Run with: python app.py
 from __future__ import annotations
 import os
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")  # local dev: allow OAuth over HTTP
+# Vercel-only hardening: a bad DATABASE_URL (e.g. the app's own URL pasted into
+# the dashboard) or a plain-string FRONTEND_ORIGINS would crash Settings/engine
+# construction at import. This runs no matter which entrypoint Vercel boots.
+if os.environ.get("VERCEL"):
+    _db = os.environ.get("DATABASE_URL", "")
+    if not _db or not _db.startswith(("postgres", "sqlite")):
+        os.environ["DATABASE_URL"] = "sqlite+aiosqlite:////tmp/prism.db"
+    _orig = os.environ.get("FRONTEND_ORIGINS", "")
+    if _orig and not _orig.strip().startswith("["):
+        os.environ["FRONTEND_ORIGINS"] = '["' + _orig.replace('"', '\\"') + '"]'
 import asyncio, base64, json, logging, re, time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -2360,23 +2370,28 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 # ============================ APP + LIFESPAN ============================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if _is_sqlite:
-        # WAL so background sync writes never block reads / the OAuth callback
-        async with engine.begin() as conn:
-            await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
-            await conn.exec_driver_sql("PRAGMA busy_timeout=30000")
-    async with engine.begin() as conn:           # auto-create tables (no Alembic step)
-        await conn.run_sync(Base.metadata.create_all)
-    if _is_sqlite:
-        # lightweight column migration for columns added after v1.3 (safe no-op if present)
-        for col_sql in ("ALTER TABLE messages ADD COLUMN att_count INTEGER DEFAULT 0",
-                        "ALTER TABLE messages ADD COLUMN list_unsub VARCHAR(512)",
-                        "ALTER TABLE messages ADD COLUMN att_names TEXT"):
-            try:
-                async with engine.begin() as conn:
-                    await conn.exec_driver_sql(col_sql)
-            except Exception:
-                pass
+    # Never let startup fail (e.g. a flaky DB on Vercel) — the API must boot;
+    # /healthz reports db health and tables are re-created lazily if missing.
+    try:
+        if _is_sqlite:
+            # WAL so background sync writes never block reads / the OAuth callback
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+                await conn.exec_driver_sql("PRAGMA busy_timeout=30000")
+        async with engine.begin() as conn:           # auto-create tables (no Alembic step)
+            await conn.run_sync(Base.metadata.create_all)
+        if _is_sqlite:
+            # lightweight column migration for columns added after v1.3 (safe no-op if present)
+            for col_sql in ("ALTER TABLE messages ADD COLUMN att_count INTEGER DEFAULT 0",
+                            "ALTER TABLE messages ADD COLUMN list_unsub VARCHAR(512)",
+                            "ALTER TABLE messages ADD COLUMN att_names TEXT"):
+                try:
+                    async with engine.begin() as conn:
+                        await conn.exec_driver_sql(col_sql)
+                except Exception:
+                    pass
+    except Exception:
+        log.exception("lifespan: DB init failed — continuing without it")
     if not settings.gmail_client_id: log.warning("GMAIL_CLIENT_ID empty — Connect will 500 until set in .env")
     if not settings.llm_api_key: log.info("LLM_API_KEY empty — using deterministic fallback drafts/classifications")
     log.info("Prism backend ready on %s", settings.app_base_url)
@@ -2428,6 +2443,23 @@ async def healthz(db: AsyncSession = Depends(get_session)):
     return {"ok": db_ok, "db": db_ok, "llm": bool(settings.llm_api_key), "gmail": bool(settings.gmail_client_id), "enc_at_rest": _fernet is not None}
 
 # ============================ RUN ============================
+if os.environ.get("VERCEL"):
+    # Vercel boots this module directly (FastAPI framework preset). Serve the
+    # frontend + assets too — the mangum api/index.py path may never run.
+    from pathlib import Path
+    _ROOT = Path(__file__).resolve().parent
+    _ALLOWED_STATIC = {
+        "prism.html", "boot-splash.png", "boot-logo.jpg", "splash.mp4",
+        "app icon neon.jpg", "Screenshot 2026-08-02 213509 borderless.png",
+        "Screenshot 2026-08-02 213509.png",
+    }
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def _serve_static(path: str):
+        if path in _ALLOWED_STATIC and (_ROOT / path).is_file():
+            return FileResponse(_ROOT / path)
+        raise HTTPException(status_code=404, detail="Not found")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

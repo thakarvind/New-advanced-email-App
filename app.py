@@ -1287,10 +1287,13 @@ def _normalize_origin(u: str) -> str:
     except Exception:
         return u
 
-def _origin_allowed(redirect):
+def _origin_allowed(redirect, request=None):
     if not redirect: return False
     try: o = urlparse(redirect).scheme+"://"+urlparse(redirect).netloc
     except Exception: return False
+    if os.environ.get("VERCEL") and request is not None:
+        # same deployment = same origin = always allowed (frontend served by the API)
+        if o == str(request.base_url).rstrip("/"): return True
     allowed = settings.parsed_frontend_origins
     if settings.cors_allow_all or "*" in allowed: return True
     no = _normalize_origin(o)
@@ -1300,7 +1303,7 @@ def _origin_allowed(redirect):
 @auth_router.get("/start")
 def auth_start(request: Request, redirect: str = Query(...)):
     from urllib.parse import quote_plus
-    if not _origin_allowed(redirect): raise HTTPException(400,"redirect origin not allowlisted (FRONTEND_ORIGINS)")
+    if not _origin_allowed(redirect, request): raise HTTPException(400,"redirect origin not allowlisted (FRONTEND_ORIGINS)")
     if not settings.gmail_client_id:
         sep = "&" if "?" in redirect else "?"
         return RedirectResponse(redirect + sep + "error=" + quote_plus("GMAIL_CLIENT_ID is not configured on the backend. Please check the backend .env file."))
@@ -1312,7 +1315,7 @@ def auth_start(request: Request, redirect: str = Query(...)):
 async def auth_callback(request: Request, db: AsyncSession = Depends(get_session)):
     from urllib.parse import quote_plus
     state = request.query_params.get("state") or ""; redirect = _read_state(state) if state else ""
-    if request.query_params.get("error") or not _origin_allowed(redirect):
+    if request.query_params.get("error") or not _origin_allowed(redirect, request):
         target = redirect or (settings.parsed_frontend_origins[0] if settings.parsed_frontend_origins else settings.app_base_url)
         err_msg = request.query_params.get("error") or "OAuth access was denied by Google or the user."
         sep = "&" if "?" in target else "?"; return RedirectResponse(target + sep + "error=" + quote_plus(err_msg))

@@ -6483,28 +6483,6 @@
       if (m) { setTok(decodeURIComponent(m[1])); history.replaceState(null, '', location.pathname + location.search); }
     })();
 
-    /* Refresh rate limit: normal refreshes keep you signed in, but >5 reloads in 60s
-       is treated as a possible session-replay/brute attempt — force re-login. */
-    (function () {
-      try {
-        const KEY = 'prism_refresh_marks', MAX = 5, WINDOW = 60000;
-        let marks = [];
-        try { marks = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { }
-        const now = Date.now();
-        marks = marks.filter(t => now - t < WINDOW);
-        marks.push(now);
-        localStorage.setItem(KEY, JSON.stringify(marks));
-        if (marks.length > MAX && tok()) {
-          setTok(null);
-          localStorage.removeItem(KEY);
-          setTimeout(() => {
-            const el = document.getElementById('loginError');
-            if (el) { el.textContent = 'Too many refreshes detected — please sign in again for security.'; el.style.display = 'block'; }
-          }, 1200);
-        }
-      } catch (e) { }
-    })();
-
     /* ===== API HELPER ===== */
     function api(path, opts) {
       opts = opts || {};
@@ -7905,8 +7883,10 @@
         } catch (e) { }
         finally {
           _syncBusy = false;
-          // Keep draining the backlog: retry in a few seconds if the last sync was time-boxed
-          if (_partial && LIVE && tok()) setTimeout(() => syncLive(true), 6000);
+          // Keep draining the backlog: retry after a pause if the last sync was time-boxed.
+          // 6s was too aggressive — each cycle spins a new Vercel instance + DB connection,
+          // and during a run it just harvests 409s. 20s keeps pressure off the pooler.
+          if (_partial && LIVE && tok()) setTimeout(() => syncLive(true), 20000);
         }
       })();
     }

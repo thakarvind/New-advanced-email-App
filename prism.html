@@ -5662,7 +5662,7 @@
   <script>/* boot: full-screen screenshot image, 10s then slide+flash up */
     (function () {
       const b = document.getElementById('boot'); if (!b) return;
-      const bar = b.querySelector('.bar i'), MAX = 2500, t0 = performance.now();
+      const bar = b.querySelector('.bar i'), MAX = 700, t0 = performance.now();
       const go = () => { if (bar) bar.style.transform = 'scaleX(1)'; b.classList.add('done'); setTimeout(() => b.remove(), 800); };
       const tick = now => {
         const p = Math.min(1, (now - t0) / MAX);
@@ -8573,13 +8573,25 @@
 
     async function initLiveMode() {
       let meData = null, syncData = null;
+      // Fire identity + mailbox requests in parallel (cold-start functions overlap
+      // instead of running one after another — halves the load wait).
+      const meP = api('/api/me');
+      const mailP = api('/api/mail?folder=inbox&limit=1000').catch(() => []);
       try {
-        // Load identity + mailbox FIRST so the app renders instantly on refresh;
-        // the sync runs in the background (the drain loop in syncLive keeps pulling).
-        meData = await api('/api/me');
-        const mailData = await api('/api/mail?folder=inbox&limit=1000');
-
+        meData = await meP;
         ME = meData;
+        // Render the app shell the moment identity resolves — the login gate no
+        // longer sits there while the mailbox fetch is in flight.
+        enterApp();
+        const _ct0 = $('#ct'); if (_ct0 && !_ct0.innerHTML.trim()) _ct0.innerHTML = '<div class="emptyrow">Loading messages…</div>';
+        updateSettingsAccount(meData, null);
+        updateEncBadge(meData.enc_at_rest);
+        $('#tbenv').innerHTML = 'LIVE · GMAIL · <b>' + esc(meData.email.split('@')[0]) + '</b>';
+        $('#sfn').textContent = meData.email || 'Connected';
+        const sfav = $('#sfav'); sfav.textContent = ini(meData.email.split('@')[0]);
+        const pfpAv = $('#pfpAv'); if (pfpAv) pfpAv.textContent = sfav.textContent;
+
+        const mailData = await mailP;
         T = mailData.map(function (m) {
           // Only cache bodies that contain HTML markup; plain-text bodies stay uncached
           // so opening the message triggers a live backend fetch (which now re-pulls
@@ -8589,15 +8601,8 @@
           return mapMail(m);
         });
         SNZ = []; TRASH = []; LIVE = true;
-        enterApp(); rc(); rr(); uc();
+        rc(); rr(); uc();
         startAutoSync();
-        updateSettingsAccount(meData, syncData);
-        updateEncBadge(meData.enc_at_rest);
-        $('#tbenv').innerHTML = 'LIVE · GMAIL · <b>' + esc(meData.email.split('@')[0]) + '</b>';
-        // Update sidebar footer
-        $('#sfn').textContent = meData.email || 'Connected';
-        const sfav = $('#sfav'); sfav.textContent = ini(meData.email.split('@')[0]);
-        const pfpAv = $('#pfpAv'); if (pfpAv) pfpAv.textContent = sfav.textContent;
         // Prefetch folder counts for the sidebar badges (bodies are stripped by the backend)
         ['sent', 'drafts', 'spam'].forEach(f => {
           api('/api/mail?folder=' + f + '&limit=1000').then(l => { _foldCnts[f] = (l || []).length; uc(); }).catch(() => { });

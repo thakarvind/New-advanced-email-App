@@ -2495,6 +2495,17 @@ async def lifespan(app: FastAPI):
                         await conn.exec_driver_sql(col_sql)
                 except Exception:
                     pass
+        else:
+            # Postgres (Vercel/Neon): IF NOT EXISTS is supported — no-op when present
+            for col_sql in ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS att_count INTEGER DEFAULT 0",
+                            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS list_unsub VARCHAR(512)",
+                            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS att_names TEXT",
+                            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS encrypted BOOLEAN DEFAULT FALSE"):
+                try:
+                    async with engine.begin() as conn:
+                        await conn.exec_driver_sql(col_sql)
+                except Exception:
+                    pass
     except Exception:
         log.exception("lifespan: DB init failed — continuing without it")
     if not settings.gmail_client_id: log.warning("GMAIL_CLIENT_ID empty — Connect will 500 until set in .env")

@@ -6242,12 +6242,7 @@
   <div class="ob" id="ob">
     <div class="gold" id="gold2"></div>
     <div class="obc">
-      <div class="obmark"><svg viewBox="0 0 24 24" width="52" height="52" fill="none">
-          <path d="M12 3 L20 18 L4 18 Z" stroke="url(#pg)" stroke-width="1.5" stroke-linejoin="round" />
-          <line x1="20" y1="9" x2="23" y2="8" stroke="#a78bfa" stroke-width="1.4" stroke-linecap="round" />
-          <line x1="20" y1="12" x2="23.5" y2="12" stroke="#f472b6" stroke-width="1.4" stroke-linecap="round" />
-          <line x1="20" y1="15" x2="23" y2="16" stroke="#2dd4bf" stroke-width="1.4" stroke-linecap="round" />
-        </svg></div>
+      <div class="obmark"><img src="Screenshot 2026-08-02 213509.png" alt="Prism" style="width:52px;height:52px;object-fit:cover;border-radius:14px"></div>
       <div class="obn">Prism</div>
       <p class="obt">The AI email client that refracts inbox noise into clear, actionable signal.</p>
 
@@ -8529,7 +8524,10 @@
       const btn = $('#gBtn'); btn.disabled = true;
       btn.innerHTML = '<div class="spin"></div> Connecting…';
       // Redirect to backend OAuth — no client-side Google SDK needed
-      const redirect = encodeURIComponent(location.origin + location.pathname);
+      // Use /prism.html (not root "/"): the callback returns #prism_token as a
+      // URL fragment, and a server redirect from "/" to /prism.html drops it.
+      const page = location.pathname.split('/').pop() === 'prism.html' ? location.pathname : '/prism.html';
+      const redirect = encodeURIComponent(location.origin + page);
       location.href = API_BASE + '/auth/gmail/start?redirect=' + redirect;
     }
 

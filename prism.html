@@ -4549,6 +4549,18 @@
       transition: opacity .6s cubic-bezier(.55, 0, .3, 1), visibility 0s .7s
     }
 
+    .boot .boot-logo {
+      position: absolute;
+      left: 50%;
+      top: 9%;
+      transform: translateX(-50%);
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      object-fit: cover;
+      filter: drop-shadow(0 0 18px rgba(0, 0, 0, .9)) drop-shadow(0 0 42px rgba(0, 0, 0, .55))
+    }
+
     .boot .brand-word {
       font-size: 58px;
       font-weight: 800;
@@ -5641,6 +5653,7 @@
 
   <!-- boot splash -->
   <div class="boot" id="boot">
+    <img class="boot-logo" src="app icon neon.jpg" alt="Prism">
     <div class="bar"><i></i></div>
     <div class="blip"></div>
     <div class="sheen"></div>
@@ -6332,7 +6345,7 @@
   <main class="shell">
     <div class="gold" id="gold"></div>
     <aside class="sb">
-      <div class="logo"><img class="logo-img" src="app icon neon.jpg" alt="Prism">Prism<span class="badge">AI</span></div>
+      <div class="logo"><img class="logo-img" src="Screenshot 2026-08-02 213509.png" alt="Prism">Prism<span class="badge">AI</span></div>
       <button class="comp" id="compBtn">＋&nbsp; Compose</button>
       <nav id="fn">
         <button class="ni act" data-f="inbox"><svg viewBox="0 0 24 24">

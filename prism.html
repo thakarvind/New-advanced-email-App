@@ -7855,7 +7855,7 @@
             const syncResp = await api('/api/sync', { method: 'POST' });
             // Backlog drain: if the server time-boxed the sync (Vercel 10s limit),
             // keep pulling until the mailbox is fully drained.
-            _partial = !!(syncResp && (syncResp.partial || (syncResp.status === 'running')));
+            _partial = !!(syncResp && syncResp.status === 'partial');
           } catch (e) { }
           const mailData = await api('/api/mail?folder=inbox&limit=1000');
           if (Array.isArray(mailData) && mailData.length) {

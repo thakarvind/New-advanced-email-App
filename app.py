@@ -2208,8 +2208,6 @@ async def sync_post(account: Account = Depends(get_current_account), db: AsyncSe
         if ss.status == "running" and ss.started_at and (datetime.utcnow() - ss.started_at).total_seconds() > 120:
             # Stale run (Vercel killed the function mid-sync): reset so the next call can proceed
             ss.status = "partial"; ss.finished_at = datetime.utcnow(); ss.last_error = "previous sync was interrupted"; await db.commit()
-        if ss.status in ("done", "partial") and ss.finished_at and (datetime.utcnow() - ss.finished_at).total_seconds() < 300:
-            return await read_status(db, account.id)
         # Acquire lock and run sync with timeout to prevent hanging
         async with acquire_sync_lock(db, account.id):
             summary = await asyncio.wait_for(run_sync(account, db), timeout=120)

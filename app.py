@@ -2496,6 +2496,12 @@ async def lifespan(app: FastAPI):
                 await conn.exec_driver_sql("PRAGMA busy_timeout=30000")
         async with engine.begin() as conn:           # auto-create tables (no Alembic step)
             await conn.run_sync(Base.metadata.create_all)
+        # One-time purge: bodies now live in Gmail, not here (free egress; frees 0.5GB storage)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("UPDATE messages SET body=NULL"))
+        except Exception:
+            pass
         if _is_sqlite:
             # lightweight column migration for columns added after v1.3 (safe no-op if present)
             for col_sql in ("ALTER TABLE messages ADD COLUMN att_count INTEGER DEFAULT 0",

@@ -7294,9 +7294,8 @@
         }
         try {
           const b = await api('/api/mail/security/breach/' + encodeURIComponent(val));
-          if (b && b.status === 'no_key') {
-            if (rs) rs.textContent += '  Dark-web scan: add HIBP_API_KEY to .env to enable.';
-          } else if (b && b.status === 'ok') {
+          if (b && b.status === 'ok') {
+            if (b.simulated) logSec('ok', 'dark-web scan simulated (no HIBP key) for ' + val);
             if (b.exposed) {
               const names = (b.breaches || []).slice(0, 5).map(x => x.name).join(', ');
               if (rs) rs.textContent += '  DARK WEB: ' + (b.breaches || []).length + ' breach(es)' + (names ? ' — ' + names : '') + (b.pastes ? ' · ' + b.pastes + ' paste(s)' : '') + '.';

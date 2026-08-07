@@ -8575,7 +8575,14 @@
       // Fire identity + mailbox requests in parallel (cold-start functions overlap
       // instead of running one after another — halves the load wait).
       const meP = api('/api/me');
-      const mailP = api('/api/mail?folder=inbox&limit=1000').catch(() => []);
+      // Retry the mailbox fetch: a transient failure (deploy window, cold start) must
+      // not leave the inbox permanently empty — the old .catch(() => []) did exactly that.
+      const mailP = (async () => {
+        for (let i = 0; ; i++) {
+          try { return await api('/api/mail?folder=inbox&limit=1000'); }
+          catch (e) { if (i >= 2) throw e; await new Promise(r => setTimeout(r, 1200 * (i + 1))); }
+        }
+      })();
       try {
         meData = await meP;
         ME = meData;

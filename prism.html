@@ -7856,8 +7856,10 @@
             // keep pulling until the mailbox is fully drained.
             _partial = !!(syncResp && syncResp.status === 'partial');
           } catch (e) {
-            // 409 = another sync is in flight right now; retry shortly (drain loop)
-            if (e && e.body && e.body.detail && e.body.detail.error === 'sync_in_progress') _partial = true;
+            // 409 = another sync is in flight right now; retry shortly (drain loop).
+            // Any other failure (transient 5xx, cold-start crash) must ALSO keep the
+            // drain alive — otherwise a single bad response stalls new mail forever.
+            _partial = true;
           }
           const mailData = await api('/api/mail?folder=inbox&limit=1000');
           if (Array.isArray(mailData) && mailData.length) {

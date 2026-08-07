@@ -2228,6 +2228,14 @@ async def sync_post(account: Account = Depends(get_current_account), db: AsyncSe
             ss.status = "partial"; ss.finished_at = datetime.utcnow(); ss.last_error = "previous sync was interrupted"; await db.commit()
         if ss.status == "running":
             raise SyncInProgress(await read_status(db, account.id))
+        # Atomic claim: two concurrent POSTs (e.g. this tab + another, or two tabs) can both
+        # pass the checks above and start parallel runs. Claim the row atomically — only one
+        # caller gets rowcount=1, the other 409s.
+        claimed = await db.execute(update(SyncState).where(
+            SyncState.account_id == account.id, SyncState.status != "running").values(status="running"))
+        await db.commit()
+        if claimed.rowcount != 1:
+            raise SyncInProgress(await read_status(db, account.id))
         # Run sync with timeout to prevent hanging
         summary = await asyncio.wait_for(run_sync(account, db), timeout=120)
         return summary

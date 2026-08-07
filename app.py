@@ -1026,6 +1026,8 @@ async def _process_page(db, account, service, events):
     exist_events = [e for e in events if e["gmail_id"] in existing]
     fulls = []
     if new_events:
+        # temp marker: find where sync runs get killed
+        ss = await _get_or_create_ss(db, account.id); ss.last_error = "gather_get_full"; await db.commit()
         res = await asyncio.gather(*(bcall(get_full_by_service, service, e["gmail_id"]) for e in new_events), return_exceptions=True)
         for e, r in zip(new_events, res):
             if isinstance(r, GmailAuthError): raise r
@@ -1035,6 +1037,7 @@ async def _process_page(db, account, service, events):
                 fulls.append(r)
     classes = []
     if fulls:
+        ss = await _get_or_create_ss(db, account.id); ss.last_error = "gather_classify"; await db.commit()
         cres = await asyncio.gather(*(bcall(classify, f["from_name"], f["from_addr"], f["subject"], f["body"]) for f in fulls), return_exceptions=True)
         for f, r in zip(fulls, cres):
             if isinstance(r, Exception):
@@ -1124,10 +1127,11 @@ async def _run_full(db, account, service, ss):
             budget_hit = True; break
         items, nxt = await bcall(list_messages_page, service, page_token, PAGE_SIZE, q="-in:trash -in:spam")
         events = [{"gmail_id":it["id"],"kind":"add","snippet":None,"labels":None} for it in (items or [])]
+        ss.last_error = "page_listed"; await db.commit()  # temp marker
         df,di,du,ds,dn,failed = await _process_page(db, account, service, events)
         f+=df; i+=di; u+=du; s+=ds; new_ids.extend(dn); ss.fetched,ss.inserted,ss.updated,ss.skipped = f,i,u,s; ss.heartbeat_at = datetime.utcnow()
         if failed: await db.commit(); return f,i,u,s,new_ids,False,True
-        page_token = nxt; ss.page_token = nxt; await db.commit()
+        page_token = nxt; ss.page_token = nxt; ss.last_error = "page_committed"; await db.commit()  # temp marker
         if not nxt: full_done = True; break
     return f,i,u,s,new_ids,full_done,budget_hit
 

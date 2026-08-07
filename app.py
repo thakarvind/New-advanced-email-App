@@ -2220,6 +2220,28 @@ async def sync_post(account: Account = Depends(get_current_account), db: AsyncSe
     except SyncInProgress as e: raise HTTPException(409, detail={"error": "sync_in_progress", "progress": e.progress})
     except GmailAuthError as e: raise HTTPException(401, detail={"error": "gmail_auth_expired", "message": str(e), "hint": _reauth_hint()})
 
+# Temporary diagnostic: times each Gmail step to find the 60s/page bottleneck (remove after fix)
+@sync_router.get("/sync/diag")
+async def sync_diag(account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
+    out = {}
+    t0 = time.perf_counter()
+    service, creds = await bcall(build_service, account)
+    out["build_service_ms"] = int((time.perf_counter() - t0) * 1000)
+    out["creds_expired"] = bool(creds.expired)
+    t0 = time.perf_counter()
+    items, nxt = await bcall(list_messages_page, service, None, 10, q="-in:trash -in:spam")
+    out["list_ms"] = int((time.perf_counter() - t0) * 1000)
+    out["n_items"] = len(items)
+    if items:
+        t0 = time.perf_counter()
+        full = await bcall(get_full_by_service, service, items[0]["id"])
+        out["get_full_ms"] = int((time.perf_counter() - t0) * 1000)
+        out["body_len"] = len(full.get("body") or "")
+    t0 = time.perf_counter()
+    await db.execute(text("SELECT 1"))
+    out["db_ms"] = int((time.perf_counter() - t0) * 1000)
+    return out
+
 @sync_router.get("/sync")
 async def sync_status(account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
     return await read_status(db, account.id)

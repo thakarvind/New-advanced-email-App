@@ -94,10 +94,10 @@ settings = Settings()
 _is_sqlite = settings.database_url.startswith("sqlite")
 _connect_args: dict = {"timeout": 30} if _is_sqlite else {}
 _db_url = settings.database_url
-if not _is_sqlite and "sslmode" in _db_url:
-    # asyncpg <0.30 rejects ?sslmode= in the URL (SQLAlchemy passes it as a
-    # connect kwarg). Strip it and pass SSL explicitly instead.
-    _db_url = _db_url.replace("?sslmode=require", "").replace("&sslmode=require", "").replace("?sslmode=disable", "").replace("&sslmode=disable", "")
+if not _is_sqlite and ("sslmode" in _db_url or "channel_binding" in _db_url):
+    # asyncpg <0.30 rejects ?sslmode=/?channel_binding= in the URL (SQLAlchemy passes them
+    # as connect kwargs). Strip them and pass SSL explicitly instead.
+    _db_url = re.sub(r"[?&](sslmode|channel_binding|connect_timeout)=[^&#]*", "", _db_url)
     _connect_args["ssl"] = "require"
 engine = create_async_engine(_db_url, pool_pre_ping=True, future=True,
                              # Serverless: each Vercel instance serves ONE request at a time.

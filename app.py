@@ -89,8 +89,14 @@ settings = Settings()
 
 # ============================ DB ============================
 _is_sqlite = settings.database_url.startswith("sqlite")
-engine = create_async_engine(settings.database_url, pool_pre_ping=True, future=True,
-                             connect_args={"timeout": 30} if _is_sqlite else {})
+_connect_args: dict = {"timeout": 30} if _is_sqlite else {}
+_db_url = settings.database_url
+if not _is_sqlite and "sslmode" in _db_url:
+    # asyncpg <0.30 rejects ?sslmode= in the URL (SQLAlchemy passes it as a
+    # connect kwarg). Strip it and pass SSL explicitly instead.
+    _db_url = _db_url.replace("?sslmode=require", "").replace("&sslmode=require", "").replace("?sslmode=disable", "").replace("&sslmode=disable", "")
+    _connect_args["ssl"] = "require"
+engine = create_async_engine(_db_url, pool_pre_ping=True, future=True, connect_args=_connect_args)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 Base = declarative_base()
 

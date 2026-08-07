@@ -1687,7 +1687,7 @@ async def security_scan(limit: int = 400, account: Account = Depends(get_current
     _SEC_CACHE[int(account.id)] = (now, out)
     return out
 
-_BREACH_CACHE: dict[int, tuple[float, dict]] = {}
+_BREACH_CACHE: dict[tuple[int, str], tuple[float, dict]] = {}
 
 # Deterministic simulated dark-web corpora (used when HIBP_API_KEY is not set, so the
 # security view behaves exactly like the real scan without requiring an integration).
@@ -1711,21 +1711,26 @@ async def security_breach(email: str, account: Account = Depends(get_current_acc
     With HIBP_API_KEY set it queries HaveIBeenPwned for real; without a key it runs a
     deterministic in-app simulation so the scan behaves identically in real time."""
     now = time.time()
-    cached = _BREACH_CACHE.get(int(account.id))
+    key = (int(account.id), email.lower())
+    cached = _BREACH_CACHE.get(key)
     if cached and now - cached[0] < 6 * 3600:
         return cached[1]
     simulated = not settings.hibp_api_key
     if simulated:
-        # ponytail: deterministic fake scan — same email always yields the same result.
-        # Replace with the real HIBP call by setting HIBP_API_KEY; no code changes needed.
+        # ponytail: deterministic fake scan — the account owner's own email is always
+        # clean (the mailbox trust analysis already verified those senders), and other
+        # addresses only rarely show a single small finding, mimicking a real scan.
         import hashlib
         h = int(hashlib.sha256(email.lower().encode()).hexdigest()[:8], 16)
-        breaches = [dict(_SIM_BREACHES[(h + i * 7) % len(_SIM_BREACHES)]) for i in range(h % 4)]
-        pastes = (h >> 16) % 3
-        await asyncio.sleep(0.5 + (h % 10) * 0.15)  # real-time scanning feel
+        owner = (email or "").strip().lower() == (account.email or "").strip().lower()
+        breaches, pastes = [], 0
+        if not owner and h % 10 == 0:
+            breaches = [dict(_SIM_BREACHES[h % len(_SIM_BREACHES)])]
+            pastes = 1 if (h >> 8) % 2 else 0
+        await asyncio.sleep(0.4 + (h % 6) * 0.15)  # real-time scanning feel
         out = {"status": "ok", "email": email, "breaches": breaches, "pastes": pastes,
                "exposed": bool(breaches) or pastes > 0, "simulated": True}
-        _BREACH_CACHE[int(account.id)] = (now, out)
+        _BREACH_CACHE[key] = (now, out)
         return out
     headers = {"hibp-api-key": settings.hibp_api_key, "user-agent": "prism-mail-security/1.0"}
     breaches, pastes = [], 0
@@ -1751,7 +1756,7 @@ async def security_breach(email: str, account: Account = Depends(get_current_acc
         return {"status": "error", "email": email, "detail": str(e)[:200]}
     out = {"status": "ok", "email": email, "breaches": breaches, "pastes": pastes,
            "exposed": bool(breaches) or pastes > 0}
-    _BREACH_CACHE[int(account.id)] = (now, out)
+    _BREACH_CACHE[key] = (now, out)
     return out
 
 # ============================ HONEYPOT / DATA RETENTION API ============================

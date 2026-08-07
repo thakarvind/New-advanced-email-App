@@ -11,7 +11,10 @@ if not os.environ.get("VERCEL"):
 # construction at import. This runs no matter which entrypoint Vercel boots.
 if os.environ.get("VERCEL"):
     _db = os.environ.get("DATABASE_URL", "")
-    if not _db.startswith("postgres"):
+    if _db.startswith(("postgres://", "postgresql://")):
+        _db = _db.replace("postgresql://", "postgresql+asyncpg://", 1).replace("postgres://", "postgresql+asyncpg://", 1)
+        os.environ["DATABASE_URL"] = _db
+    elif not _db.startswith("postgres"):
         os.environ["DATABASE_URL"] = "sqlite+aiosqlite:////tmp/prism.db"
     _orig = os.environ.get("FRONTEND_ORIGINS", "")
     if _orig and not _orig.strip().startswith("["):

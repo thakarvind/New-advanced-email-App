@@ -995,6 +995,11 @@ async def bcall(fn, *args, **kwargs):
         if _is_auth_error(e): raise GmailAuthError(str(e)) from e
         raise
 
+async def _timeboxed(coro, seconds):
+    """Run an awaitable with a hard timeout; the caller treats the raised
+    TimeoutError like any other per-message failure (skip, keep going)."""
+    return await asyncio.wait_for(coro, seconds)
+
 async def asyncio_to_thread(fn, *args, **kwargs):
     import asyncio
     return await asyncio.to_thread(fn, *args, **kwargs)
@@ -1026,9 +1031,7 @@ async def _process_page(db, account, service, events):
     exist_events = [e for e in events if e["gmail_id"] in existing]
     fulls = []
     if new_events:
-        # temp marker: find where sync runs get killed
-        ss = await _get_or_create_ss(db, account.id); ss.last_error = "gather_get_full"; await db.commit()
-        res = await asyncio.gather(*(bcall(get_full_by_service, service, e["gmail_id"]) for e in new_events), return_exceptions=True)
+        res = await asyncio.gather(*(_timeboxed(bcall(get_full_by_service, service, e["gmail_id"]), 10) for e in new_events), return_exceptions=True)
         for e, r in zip(new_events, res):
             if isinstance(r, GmailAuthError): raise r
             if isinstance(r, Exception):
@@ -1037,7 +1040,6 @@ async def _process_page(db, account, service, events):
                 fulls.append(r)
     classes = []
     if fulls:
-        ss = await _get_or_create_ss(db, account.id); ss.last_error = "gather_classify"; await db.commit()
         cres = await asyncio.gather(*(bcall(classify, f["from_name"], f["from_addr"], f["subject"], f["body"]) for f in fulls), return_exceptions=True)
         for f, r in zip(fulls, cres):
             if isinstance(r, Exception):
@@ -1086,7 +1088,7 @@ async def _process_page(db, account, service, events):
             if r.body is None or "<" not in r.body:
                 # Live re-fetch the full body so HTML is extracted
                 try:
-                    full = await bcall(get_full_by_service, service, e["gmail_id"])
+                    full = await _timeboxed(bcall(get_full_by_service, service, e["gmail_id"]), 10)
                     if full.get("body") and "<" in full["body"]: updates["body"] = full["body"]
                 except Exception: pass
             if updates:
@@ -1125,13 +1127,16 @@ async def _run_full(db, account, service, ss):
         if time.perf_counter() - t0 > SYNC_BUDGET_S:
             # Vercel kills the function ~10s; stop cleanly, resume via page_token next call
             budget_hit = True; break
-        items, nxt = await bcall(list_messages_page, service, page_token, PAGE_SIZE, q="-in:trash -in:spam")
+        try:
+            items, nxt = await _timeboxed(bcall(list_messages_page, service, page_token, PAGE_SIZE, q="-in:trash -in:spam"), 15)
+        except asyncio.TimeoutError:
+            log.warning("list page timed out; pausing sync")
+            budget_hit = True; break
         events = [{"gmail_id":it["id"],"kind":"add","snippet":None,"labels":None} for it in (items or [])]
-        ss.last_error = "page_listed"; await db.commit()  # temp marker
         df,di,du,ds,dn,failed = await _process_page(db, account, service, events)
         f+=df; i+=di; u+=du; s+=ds; new_ids.extend(dn); ss.fetched,ss.inserted,ss.updated,ss.skipped = f,i,u,s; ss.heartbeat_at = datetime.utcnow()
         if failed: await db.commit(); return f,i,u,s,new_ids,False,True
-        page_token = nxt; ss.page_token = nxt; ss.last_error = "page_committed"; await db.commit()  # temp marker
+        page_token = nxt; ss.page_token = nxt; await db.commit()
         if not nxt: full_done = True; break
     return f,i,u,s,new_ids,full_done,budget_hit
 

@@ -4636,17 +4636,21 @@
       will-change: transform
     }
 
-    .boot .blip {
+    .boot .waves {
       position: absolute;
       left: 50%;
       top: 50%;
+      pointer-events: none
+    }
+
+    .boot .waves i {
+      position: absolute;
       width: 8px;
       height: 8px;
       border-radius: 50%;
       border: 3px solid rgba(140, 190, 255, .9);
       box-shadow: 0 0 60px rgba(120, 180, 255, .6), inset 0 0 60px rgba(120, 180, 255, .35);
       opacity: 0;
-      pointer-events: none;
       transform: translate(-50%, -50%) scale(0)
     }
 
@@ -4656,8 +4660,24 @@
       pointer-events: none
     }
 
-    .boot.done .blip {
-      animation: blip .6s cubic-bezier(.2, .6, .3, 1) forwards
+    .boot.done .waves i {
+      animation: wave .8s cubic-bezier(.2, .6, .3, 1) forwards
+    }
+
+    .boot.done .waves i:nth-child(1) {
+      animation-delay: 0s
+    }
+
+    .boot.done .waves i:nth-child(2) {
+      animation-delay: .12s
+    }
+
+    .boot.done .waves i:nth-child(3) {
+      animation-delay: .24s
+    }
+
+    .boot.done .waves i:nth-child(4) {
+      animation-delay: .36s
     }
 
     @keyframes sheen {
@@ -4676,19 +4696,19 @@
       }
     }
 
-    @keyframes blip {
+    @keyframes wave {
       0% {
-        opacity: 0;
+        opacity: .95;
         transform: translate(-50%, -50%) scale(0)
       }
 
-      20% {
-        opacity: .95
+      25% {
+        opacity: .8
       }
 
       100% {
         opacity: 0;
-        transform: translate(-50%, -50%) scale(140);
+        transform: translate(-50%, -50%) scale(150);
         border-width: 1px
       }
     }
@@ -5655,7 +5675,12 @@
   <div class="boot" id="boot">
     <img class="boot-logo" src="app icon neon.jpg" alt="Prism">
     <div class="bar"><i></i></div>
-    <div class="blip"></div>
+    <div class="waves">
+      <i></i>
+      <i></i>
+      <i></i>
+      <i></i>
+    </div>
     <div class="sheen"></div>
     <div class="flash"></div>
   </div>

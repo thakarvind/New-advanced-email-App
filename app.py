@@ -1083,7 +1083,7 @@ async def _process_page(db, account, service, events):
         folder,read,star = folder_from_labels(f["labels"])
         m = Message(account_id=account.id, gmail_id=f["gmail_id"], thread_id=f["thread_id"], message_id_header=f["message_id_header"],
                     from_name=f["from_name"], from_addr=f["from_addr"], to_addr=f["to_addr"], subject=f["subject"], snippet=f["snippet"],
-                    body=f["body"], received_at=f["received_at"], folder=folder, is_read=read, is_starred=star, raw_labels=",".join(f["labels"] or []),
+                    body=None, received_at=f["received_at"], folder=folder, is_read=read, is_starred=star, raw_labels=",".join(f["labels"] or []),
                     att_count=f.get("att_count", 0), att_names=f.get("att_names"), list_unsub=f.get("list_unsub") or None,
                     encrypted=f.get("encrypted", False))
         db.add(m); await db.flush()
@@ -1102,7 +1102,7 @@ async def _process_page(db, account, service, events):
                     updates.update(folder=folder, is_read=read, is_starred=star)
                 if full.get("snippet") and full["snippet"] != r.snippet: updates["snippet"] = full["snippet"]
                 if full.get("encrypted") and not r.encrypted: updates["encrypted"] = True
-                if full.get("body") and "<" in full["body"] and (r.body is None or "<" not in r.body): updates["body"] = full["body"]
+                # bodies are not stored — served live from Gmail
                 if full.get("att_count") is not None and full["att_count"] != r.att_count: updates["att_count"] = full["att_count"]
                 if full.get("att_names") and full["att_names"] != r.att_names: updates["att_names"] = full["att_names"]
                 if full.get("list_unsub"): updates["list_unsub"] = full["list_unsub"]
@@ -1113,17 +1113,11 @@ async def _process_page(db, account, service, events):
                 log.warning("label refresh failed for %s", e["gmail_id"], exc_info=True)
             continue
         snip = e.get("snippet")
-        # Re-fetch body if it's missing HTML content (stale plain-text sync from before the HTML fix)
-        needs_refresh = (not r.snippet or (snip and snip != r.snippet)) or (r.body is None or "<" not in r.body)
+        # Snippet-only refresh (bodies are served live from Gmail, never stored)
+        needs_refresh = not r.snippet or (snip and snip != r.snippet)
         if needs_refresh:
             updates = {}
             if snip and snip != r.snippet: updates["snippet"] = snip
-            if r.body is None or "<" not in r.body:
-                # Live re-fetch the full body so HTML is extracted
-                try:
-                    full = await _timeboxed(bcall(get_full_by_service, service, e["gmail_id"]), 10)
-                    if full.get("body") and "<" in full["body"]: updates["body"] = full["body"]
-                except Exception: pass
             if updates:
                 await db.execute(update(Message).where(Message.id == r.id).values(**updates))
                 pg_updated += 1
@@ -1708,8 +1702,21 @@ async def security_scan(limit: int = 400, account: Account = Depends(get_current
             res["subj"] = m.subject or ""
             if res["severity"] in ("high", "critical"):
                 cands.append({"id": m.id, "from_name": m.from_name or "", "from_addr": m.from_addr or "",
-                              "subj": m.subject or "", "body": (m.body or "")[:400]})
-            results.append(res)
+                              "subj": m.subject or "", "body": (m.body or "")[:400], "gmail_id": m.gmail_id})
+    # Bodies aren't stored — fetch them live for the few high/critical candidates
+    # so the LLM verdict can see real content (Gmail API traffic is free).
+    if cands:
+        try:
+            service = _service(account)[0]
+            for c in cands:
+                if c.get("gmail_id"):
+                    try:
+                        full = await bcall(get_full_by_service, service, c["gmail_id"])
+                        c["body"] = (full.get("body") or "")[:400]
+                    except Exception:
+                        pass
+        except Exception:
+            log.warning("security scan: live body fetch failed", exc_info=True)
     ai = _llm_verify(cands)
     if ai:
         for v in ai:
@@ -1991,20 +1998,25 @@ async def proxy_remote_image(url: str, account: Account = Depends(get_current_ac
 @mail_router.get("/{mid}")
 async def mail_get(mid: int, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
     m = await _msg(db, account, mid)
-    # If the stored body has no HTML markup (legacy plain-text sync), re-fetch the full
-    # message from Gmail so we can extract and serve the text/html part.
-    if m.gmail_id and not m.encrypted and (not m.body or "<" not in m.body):
-        try:
-            service, _ = _service(account)
-            full = await bcall(get_full_by_service, service, m.gmail_id)
-            if full.get("body") and "<" in full["body"]:
-                m.body = full["body"]
-                await db.commit()
-        except Exception:
-            log.warning("live re-fetch failed for %s", m.gmail_id, exc_info=True)
+    # Bodies are never stored (Gmail API traffic is free; DB egress is not).
+    # Every open fetches the current body live from Gmail.
     d = mail_to_frontend(m)
+    d["body"] = await _live_body(m, account)
     cm = (await db.execute(select(Cluster.id).join(ClusterMember).where(ClusterMember.message_id == mid))).scalar_one_or_none()
     d["cluster"] = f"c{cm}" if cm else None; return d
+
+async def _live_body(m, account):
+    """Fetch the current message body from Gmail. Falls back to the DB body
+    (legacy rows / no Gmail connection) — nothing is written back."""
+    if not m.gmail_id or not (account.refresh_token or account.access_token):
+        return m.body or ""
+    try:
+        service, _ = _service(account)
+        full = await bcall(get_full_by_service, service, m.gmail_id)
+        return full.get("body") or m.body or ""
+    except Exception:
+        log.warning("live body fetch failed for %s", m.gmail_id, exc_info=True)
+        return m.body or ""
 
 @mail_router.post("/{mid}/archive")
 async def mail_archive(mid: int, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
@@ -2072,7 +2084,7 @@ async def mail_reply(mid: int, payload: ReplyIn, account: Account = Depends(get_
 async def mail_ai_reply(mid: int, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
     m = await _msg(db, account, mid)
     if m.encrypted: raise HTTPException(400, "Encrypted message — the server cannot read it. AI drafts run in your browser with a local AI key.")
-    draft = await bcall(draft_reply, m.from_name or "", m.subject or "", m.body or "")
+    draft = await bcall(draft_reply, m.from_name or "", m.subject or "", await _live_body(m, account))
     cls = m.classification or Classification(message_id=m.id); cls.draft_body = draft
     if m.classification is None: db.add(cls)
     await db.commit(); return {"reply": draft}

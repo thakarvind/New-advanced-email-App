@@ -4,7 +4,8 @@ Tables are auto-created on startup (no Alembic step). Run with: python app.py
 """
 from __future__ import annotations
 import os
-os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")  # local dev: allow OAuth over HTTP
+if not os.environ.get("VERCEL"):
+    os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")  # local dev: allow OAuth over HTTP
 # Vercel-only hardening: a bad DATABASE_URL (e.g. the app's own URL pasted into
 # the dashboard) or a plain-string FRONTEND_ORIGINS would crash Settings/engine
 # construction at import. This runs no matter which entrypoint Vercel boots.

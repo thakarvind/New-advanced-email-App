@@ -961,6 +961,9 @@ async def cluster_messages(account_id, message_ids, db):
 
 # ============================ SYNC ============================
 PAGE_SIZE = 50; MAX_PAGES = 4; SYNC_LOCK_NS = 0x5052_4953
+SYNC_BUDGET_S = 8.0  # time-box per sync call: Vercel kills functions at ~10s; resume via page_token next call
+if os.environ.get("VERCEL"):
+    PAGE_SIZE = 10  # each sync call must finish < 10s: fewer full-body fetches per page
 
 # In-process asyncio locks for SQLite (one per account_id)
 _sync_locks: dict[int, asyncio.Lock] = {}
@@ -1112,8 +1115,9 @@ def _history_to_events(resp):
     return events, resp.get("historyId"), resp.get("nextPageToken")
 
 async def _run_incremental(db, account, service, ss):
-    f=i=u=s=0; new_ids=[]; hpt=None; head=ss.last_history_id; partial=False
+    f=i=u=s=0; new_ids=[]; hpt=None; head=ss.last_history_id; partial=False; t0=time.perf_counter()
     for _ in range(MAX_PAGES):
+        if time.perf_counter() - t0 > SYNC_BUDGET_S: break
         resp = await bcall(list_history_page, service, ss.last_history_id, hpt, PAGE_SIZE)
         events, head, nxt = _history_to_events(resp)
         df,di,du,ds,dn,failed = await _process_page(db, account, service, events)
@@ -1125,8 +1129,11 @@ async def _run_incremental(db, account, service, ss):
 
 
 async def _run_full(db, account, service, ss):
-    f=i=u=s=0; new_ids=[]; page_token=ss.page_token; full_done=False
+    f=i=u=s=0; new_ids=[]; page_token=ss.page_token; full_done=False; t0=time.perf_counter()
     for _ in range(MAX_PAGES):
+        if time.perf_counter() - t0 > SYNC_BUDGET_S:
+            # Vercel kills the function ~10s; stop cleanly, resume via page_token next call
+            break
         items, nxt = await bcall(list_messages_page, service, page_token, PAGE_SIZE, q="-in:trash -in:spam")
         events = [{"gmail_id":it["id"],"kind":"add","snippet":None,"labels":None} for it in (items or [])]
         df,di,du,ds,dn,failed = await _process_page(db, account, service, events)

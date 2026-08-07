@@ -28,6 +28,7 @@ from typing import List
 from urllib.parse import urlparse
 
 import httpx
+import httplib2
 import jwt
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -522,7 +523,11 @@ def _service(account):
     if creds.expired and creds.refresh_token:
         try: creds.refresh(_GAuthRequest())
         except Exception as e: log.warning("token refresh failed: %s", e)
-    return build("gmail","v1",credentials=creds,cache_discovery=False), creds
+    # Socket-level timeout: without it a hung Gmail call stalls the page past Vercel's
+    # function limit (asyncio.wait_for can't cancel the to_thread worker, so the loop
+    # waited on the socket's default 60s). 10s caps every Gmail call at the socket.
+    http = httplib2.Http(timeout=10)
+    return build("gmail", "v1", credentials=creds, cache_discovery=False, http=http), creds
 
 async def persist_refreshed(account, creds, db):
     if creds.token: account.access_token = encrypt(creds.token)

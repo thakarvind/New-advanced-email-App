@@ -1325,10 +1325,11 @@ def auth_start(request: Request, redirect: str = Query(...)):
 async def auth_callback(request: Request, db: AsyncSession = Depends(get_session)):
     from urllib.parse import quote_plus
     state = request.query_params.get("state") or ""; redirect = _read_state(state) if state else ""
+    _reject_reason = request.query_params.get("error") or "origin/state check failed"
     if request.query_params.get("error") or not _origin_allowed(redirect, request):
         log.warning("oauth callback rejected: err=%r state_len=%d redirect=%r", request.query_params.get("error"), len(state), redirect)
         target = redirect or (settings.parsed_frontend_origins[0] if settings.parsed_frontend_origins else settings.app_base_url)
-        err_msg = request.query_params.get("error") or "OAuth access was denied by Google or the user."
+        err_msg = f"{_reject_reason} [state_len={len(state)} vercel={os.environ.get('VERCEL')!r} origins={settings.parsed_frontend_origins}]"
         sep = "&" if "?" in target else "?"; return RedirectResponse(target + sep + "error=" + quote_plus(err_msg))
     redirect_uri = settings.resolve_gmail_redirect_uri(request)
     flow = Flow.from_client_config(settings.google_client_config(request), scopes=OAUTH_SCOPES); flow.redirect_uri = redirect_uri

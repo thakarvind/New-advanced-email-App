@@ -2445,13 +2445,13 @@ def api_version():
 
 @app.get("/healthz")
 async def healthz(db: AsyncSession = Depends(get_session)):
-    db_ok = False
+    db_ok = False; db_err = ""
     try:
         await db.execute(text("SELECT 1"))
         db_ok = True
-    except Exception:
-        pass
-    return {"ok": db_ok, "db": db_ok, "llm": bool(settings.llm_api_key), "gmail": bool(settings.gmail_client_id), "enc_at_rest": _fernet is not None}
+    except Exception as e:
+        db_err = str(e)[:400]
+    return {"ok": db_ok, "db": db_ok, "db_err": db_err, "llm": bool(settings.llm_api_key), "gmail": bool(settings.gmail_client_id), "enc_at_rest": _fernet is not None}
 
 # ============================ RUN ============================
 if os.environ.get("VERCEL"):

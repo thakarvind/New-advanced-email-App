@@ -11,6 +11,7 @@
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
     rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/openpgp@5.11.2/dist/openpgp.min.js"></script>
   <style>
     * {
       margin: 0;
@@ -6059,6 +6060,22 @@
           </div>
         </div>
       </div>
+      <!-- PGP end-to-end keys (browser-held) -->
+      <div class="setsec">
+        <div class="setsec-label">PGP end-to-end keys</div>
+        <p class="setsec-hint">Keys are generated and held only in <b>this browser</b> (localStorage, passphrase-protected). Encrypted mail is stored as ciphertext on the server — it is decrypted here, on your device. Anyone with your public key can send you encrypted mail.</p>
+        <div id="pgpHasKey" hidden>
+          <div class="flt-item"><span><b>Active key</b> <code id="pgpFpr"></code></span><button class="mini-btn" id="pgpCopyPub">Copy public key</button><button class="mini-btn" id="pgpExport">Export private key</button><button class="mini-btn" id="pgpDel">Remove key</button></div>
+        </div>
+        <div id="pgpNoKey" hidden>
+          <div class="flt-item"><span><b>No key in this browser yet.</b></span><span style="display:flex;gap:8px;align-items:center"><input id="pgpPass" type="password" placeholder="Optional passphrase" style="width:170px"><button class="mini-btn" id="pgpGen">Generate keypair</button><button class="mini-btn" id="pgpImport">Import keypair</button></span></div>
+        </div>
+        <div class="flt-item"><span><b>Recipient keys</b> — save a public key to enable encrypted sending to that address.</span></div>
+        <div class="flt-item"><input id="pgpContactEmail" type="email" placeholder="friend@example.com" style="width:190px"><textarea id="pgpContactKey" rows="3" style="width:100%;font-family:var(--mono);font-size:11px" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea><button class="mini-btn" id="pgpAddContact">Save recipient key</button></div>
+        <div class="flt-item" id="pgpContactList"></div>
+        <div class="flt-item"><span><b>Local AI for encrypted mail</b> — your own key, called directly from this browser. The server never sees it or the decrypted content. Without it, encrypted mail gets no AI.</span></div>
+        <div class="flt-item"><input id="aiKey" type="password" placeholder="API key (sk-…)" style="width:220px"><input id="aiModel" placeholder="gpt-4o-mini" style="width:130px"><input id="aiEndpoint" placeholder="https://api.openai.com/v1/chat/completions" style="width:300px"><button class="mini-btn" id="aiSave">Save</button></div>
+      </div>
       <!-- Import mail and contacts -->
       <div class="setsec">
         <div class="setsec-label">Import mail and contacts</div>
@@ -6456,7 +6473,9 @@
       <div class="cmpfield"><label>Subject</label><input id="cmpSubj" type="text" placeholder="Subject line…"></div>
       <div class="cmpfield"><label>Message</label><textarea id="cmpBody" placeholder="Write your message…"></textarea>
       </div>
+      <div class="cmpfield"><label>Attachments</label><input type="file" id="cmpFiles" multiple><span id="cmpAttChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></span></div>
       <div class="cmpactions">
+        <label class="enc-toggle" title="Encrypt with PGP before sending — server stores ciphertext only"><input type="checkbox" id="cmpEnc"> 🔒 Encrypt (PGP)</label>
         <button class="btn bg" id="cmpCancelBtn">Cancel</button>
         <button class="btn bp2" id="cmpSendBtn">Send</button>
       </div>
@@ -6691,7 +6710,7 @@
         (vst.folder === 'trash' ? '<button class="rst" data-restore="' + t.id + '" title="Restore to Inbox">↩</button>' : '') + tag +
         (dayOf(t) ? '<span class="daypill">' + esc(dayOf(t)) + '</span>' : '') + '<span class="tm">' + esc(exactTime(t)) + '</span>' + attDot +
         '<button class="star ' + (t.star ? 'on' : '') + '" data-star="' + t.id + '">' + (t.star ? '★' : '☆') + '</button></div>' +
-        '<div class="sj">' + esc(t.subj || t.sj || '(no subject)') + (MLBL[t.id] && MLBL[t.id].length ? ' <span class="mllbl">' + esc(MLBL[t.id].join(' · ')) + '</span>' : '') + '</div><div class="sn">' + esc(t.snip || t.sn || '') + '</div></div>' + sentChip + '</div>';
+        '<div class="sj">' + esc(t.subj || t.sj || '(no subject)') + (t.enc ? ' <span title="End-to-end encrypted" style="cursor:help">🔒</span>' : '') + (MLBL[t.id] && MLBL[t.id].length ? ' <span class="mllbl">' + esc(MLBL[t.id].join(' · ')) + '</span>' : '') + '</div><div class="sn">' + esc(t.snip || t.sn || '') + '</div></div>' + sentChip + '</div>';
     }
 
     let _visLimit = null, _curRows = null, _curHeader = null;
@@ -7973,7 +7992,13 @@
       const rel = T.filter(x => x.id !== t.id && x.co === t.co && x.from && x.from.n === t.from.n);
       const n = rel.length || 1;
       let agent = '';
-      if (isR) {
+      if (t.enc) {
+        agent = '<div class="ah">' + sp + ' Prism Agent</div>' +
+          '<div class="ac"><div class="al pk">' + sp + ' End-to-end encrypted</div>' +
+          '<p class="acp">Decrypted locally in this browser with your PGP key. The Prism server never sees this content — AI runs in-browser only, with your own key from Settings.</p>' +
+          '<div class="why">' + sp + ' PGP · browser-held keys · server stores ciphertext only</div></div>' +
+          '<div id="encLocalAI"></div>';
+      } else if (isR) {
         const draftTxt = esc(draft || 'Thanks for reaching out — let me know a couple of time windows that work and I\'ll confirm.\n\nBest,\n' + myName());
         const headTxt = t.topic === 'recruiter' ? 'Interview logistics — reply drafted' : 'Waiting on you — reply drafted';
         const sumTxt = t.topic === 'recruiter' ? 'Recruiter proposing a first-round call. One decision: accept or propose a new time.' : 'A teammate is blocked on your sign-off. A one-line answer unblocks them.';
@@ -8070,7 +8095,33 @@
         const list = await api('/api/mail/' + t.id + '/attachments');
         if (!list.length) { $('#attList').innerHTML = 'No file attachments found'; return; }
         $('#attList').innerHTML = '<span style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">' +
-          list.map(a => '<span class="attchip"><a href="' + API_BASE + '/api/mail/' + t.id + '/attachment/' + a.attachment_id + '" download="' + esc(a.filename || 'attachment') + '">' + esc(a.filename || a.attachment_id) + '</a> · ' + Math.max(1, Math.round((a.size || 0) / 1024)) + ' KB</span>').join('') + '</span>';
+          list.map((a, i) => {
+            if (t.enc || /\.(pgp|gpg)$/i.test(a.filename || '')) {
+              return '<span class="attchip">' + esc(a.filename || a.attachment_id) + ' · ' + Math.max(1, Math.round((a.size || 0) / 1024)) + ' KB <button class="linkbtn" data-dec="' + i + '">🔒 Decrypt &amp; download</button></span>';
+            }
+            return '<span class="attchip"><a href="' + API_BASE + '/api/mail/' + t.id + '/attachment/' + a.attachment_id + '" download="' + esc(a.filename || 'attachment') + '">' + esc(a.filename || a.attachment_id) + '</a> · ' + Math.max(1, Math.round((a.size || 0) / 1024)) + ' KB</span>';
+          }).join('') + '</span>';
+        $('#attList').querySelectorAll('[data-dec]').forEach(b => b.onclick = async () => {
+          const a = list[Number(b.dataset.dec)];
+          b.disabled = true; b.textContent = 'Decrypting…';
+          try {
+            const resp = await fetch(API_BASE + '/api/mail/' + t.id + '/attachment/' + a.attachment_id, { headers: { 'Authorization': 'Bearer ' + tok() } });
+            if (!resp.ok) throw new Error('download failed');
+            const armor = await resp.text();
+            if (!pgpArmor(armor)) throw new Error('attachment is not OpenPGP-encrypted');
+            const msg = await openpgp.readMessage({ armoredMessage: armor });
+            const { data } = await openpgp.decrypt({ message: msg, decryptionKeys: await unlockPGP() }); // Uint8Array plaintext
+            const fname = (a.filename || 'attachment').replace(/\.(pgp|gpg)$/i, '');
+            const url = URL.createObjectURL(new Blob([data], { type: 'application/octet-stream' }));
+            const dl = document.createElement('a');
+            dl.href = url; dl.download = fname; dl.click();
+            URL.revokeObjectURL(url);
+            b.textContent = 'Downloaded ✓';
+          } catch (e) {
+            b.disabled = false; b.textContent = '🔒 Decrypt & download';
+            toast('Decrypt failed: ' + (e && e.message || 'unknown error'));
+          }
+        });
       } catch (e) { $('#attList').innerHTML = 'Couldn\u2019t load attachments'; }
     }
     async function unsubMail(t, btn) {
@@ -8329,8 +8380,28 @@
     }
 
     function loadLiveBody(t) {
-      api('/api/mail/' + t.id).then(m => {
+      api('/api/mail/' + t.id).then(async m => {
         if (m && m.body) {
+          if (m.enc && pgpArmor(m.body)) {
+            try {
+              const plain = await decryptBody(m.body);
+              BODY_CACHE[t.id] = plain;
+              if (vst._open && vst._open.id === t.id) renderCachedBody(t);
+              const cfg = JSON.parse(localStorage.getItem(LS_AIKEY) || 'null');
+              if (cfg && cfg.key) {
+                const c = await localClassify(plain);
+                const el = $('#encLocalAI');
+                if (c && el && vst._open && vst._open.id === t.id) {
+                  const pr = { needs_reply: 'Needs reply', waiting: 'Waiting on you', fyi: 'FYI', noise: 'Noise' }[c.priority] || c.priority;
+                  el.innerHTML = '<div class="ac"><div class="al pk">' + sp + ' Local AI (browser, your key)</div><p class="acp"><b>' + esc(String(pr)) + '</b> — ' + esc(String(c.summary || '')) + '</p></div>';
+                } else if (el) { el.innerHTML = '<div class="ac"><div class="al gy">' + sp + ' Local AI unavailable</div><p class="acp">Set an AI key in Settings to classify encrypted mail in-browser.</p></div>'; }
+              }
+            } catch (e) {
+              BODY_CACHE[t.id] = '🔒 Encrypted message — cannot decrypt in this browser. ' + (e && e.message || '');
+              if (vst._open && vst._open.id === t.id) renderCachedBody(t);
+            }
+            return;
+          }
           BODY_CACHE[t.id] = m.body || '';
           if (m.draft) DRAFT_CACHE[t.id] = m.draft;
           if (vst._open && vst._open.id === t.id) { renderCachedBody(t); }
@@ -8669,33 +8740,212 @@
     }
 
     /* ===== E2E ENCRYPTION BADGE ===== */
+    let encAtRestLast = false;
     function updateEncBadge(encAtRest) {
+      encAtRestLast = !!encAtRest;
+      const hasPgp = !!localStorage.getItem('prism_pgp_priv');
       const badge = $('#encBadge');
       const card = $('#encCard');
       const title = $('#encTitle');
       const desc = $('#encDesc');
       const atRestRow = $('#encAtRestRow');
-      if (encAtRest) {
+      if (encAtRest && hasPgp) {
         badge.classList.remove('off');
         $('#encBadgeLabel').textContent = 'E2E';
-        if (card) { card.classList.remove('off'); title.textContent = 'End-to-End Encrypted'; desc.textContent = 'Your Gmail tokens are encrypted with Fernet (AES-128-CBC) at rest. All API traffic uses TLS.'; }
+        if (card) { card.classList.remove('off'); title.textContent = 'End-to-End Encrypted (PGP)'; desc.textContent = 'Browser-held PGP keys: encrypted mail is decrypted only on your device. Tokens Fernet-encrypted at rest. TLS in transit.'; }
+        if (atRestRow) atRestRow.style.color = 'var(--teal)';
+      } else if (hasPgp) {
+        badge.classList.remove('off');
+        $('#encBadgeLabel').textContent = 'E2E';
+        if (card) { card.classList.remove('off'); title.textContent = 'End-to-End Encrypted (PGP)'; desc.textContent = 'Browser-held PGP keys active. Set TOKEN_ENCRYPTION_KEY in .env to also encrypt stored tokens at rest.'; }
+        if (atRestRow) atRestRow.style.opacity = '0.4';
+      } else if (encAtRest) {
+        badge.classList.add('off');
+        $('#encBadgeLabel').textContent = 'TLS';
+        if (card) { card.classList.remove('off'); title.textContent = 'Encrypted at Rest + TLS'; desc.textContent = 'Tokens Fernet-encrypted at rest; TLS in transit. Generate a PGP keypair in Settings for true end-to-end mail encryption.'; }
         if (atRestRow) atRestRow.style.color = 'var(--teal)';
       } else {
         badge.classList.add('off');
-        $('#encBadgeLabel').textContent = 'E2E';
-        if (card) { card.classList.add('off'); title.textContent = 'Partial Encryption'; desc.textContent = 'TLS in transit is active. Set TOKEN_ENCRYPTION_KEY in .env to enable Fernet at-rest encryption.'; }
+        $('#encBadgeLabel').textContent = 'TLS';
+        if (card) { card.classList.add('off'); title.textContent = 'TLS in Transit'; desc.textContent = 'HTTPS is active. Set TOKEN_ENCRYPTION_KEY in .env for at-rest encryption, and generate PGP keys for end-to-end mail encryption.'; }
         if (atRestRow) atRestRow.style.opacity = '0.4';
       }
-      // Update sign-in screen badge
+      // Update sign-in screen badge — only claim E2E when keys actually exist
       const obE2e = $('#obE2e');
       if (obE2e) {
-        obE2e.style.opacity = encAtRest ? '1' : '0.4';
-        obE2e.querySelector('span').textContent = encAtRest ? 'End-to-end encrypted' : 'TLS in transit only';
+        obE2e.style.opacity = (encAtRest || hasPgp) ? '1' : '0.4';
+        obE2e.querySelector('span').textContent = hasPgp ? 'End-to-end encrypted (PGP)' : (encAtRest ? 'TLS + at-rest encryption' : 'TLS in transit only');
       }
       // Live status footer on the E2E card
       const led = $('#encLed'), liveTxt = $('#encLiveTxt');
-      if (led) { led.classList.toggle('good', !!encAtRest); led.classList.toggle('warn', !encAtRest); }
-      if (liveTxt) liveTxt.textContent = encAtRest ? 'Fernet at-rest encryption verified' : 'At-rest key missing — TLS only';
+      if (led) { led.classList.toggle('good', !!(encAtRest && hasPgp)); led.classList.toggle('warn', !(encAtRest && hasPgp)); }
+      if (liveTxt) liveTxt.textContent = hasPgp ? 'PGP keys active in this browser · ' + (encAtRest ? 'Fernet at-rest verified' : 'at-rest key missing') : (encAtRest ? 'Fernet at-rest verified — no PGP keys yet' : 'At-rest key missing — TLS only');
+    }
+
+    /* ===== PGP END-TO-END ENCRYPTION (browser-held keys) ===== */
+    const LS_PRIV = 'prism_pgp_priv', LS_CONTACTS = 'prism_pgp_contacts', LS_AIKEY = 'prism_ai_key';
+    let pgpPriv = null, pgpPass = '';
+    function pgpArmor(str) { return (str || '').includes('-----BEGIN PGP MESSAGE-----'); }
+
+    async function loadPGP() {
+      const armor = localStorage.getItem(LS_PRIV);
+      if (!armor) return false;
+      try { pgpPriv = await openpgp.readKey({ armoredKey: armor }); return true; }
+      catch (e) { console.warn('PGP key load failed:', e); return false; }
+    }
+
+    async function generatePGP(passphrase) {
+      const { privateKey, publicKey } = await openpgp.generateKey({
+        type: 'ecc', curve: 'curve25519',
+        userIDs: [{ name: (ME && ME.name) || 'Prism', email: (ME && ME.email) || 'you@example.com' }],
+        passphrase: passphrase || undefined, format: 'armored'
+      });
+      localStorage.setItem(LS_PRIV, privateKey);
+      pgpPriv = await openpgp.readKey({ armoredKey: privateKey });
+      return publicKey;
+    }
+
+    async function unlockPGP() {
+      if (!pgpPriv && !(await loadPGP())) throw new Error('No PGP private key in this browser');
+      if (!pgpPriv.isDecrypted()) {
+        if (!pgpPass) pgpPass = window.prompt('PGP passphrase (session only — never stored or sent):') || '';
+        if (!pgpPass) throw new Error('Passphrase required');
+        pgpPriv = await openpgp.decryptKey({ privateKey: pgpPriv, passphrase: pgpPass });
+      }
+      return pgpPriv;
+    }
+
+    async function decryptBody(cipherBody) {
+      const msg = await openpgp.readMessage({ armoredMessage: cipherBody });
+      const { data } = await openpgp.decrypt({ message: msg, decryptionKeys: await unlockPGP() });
+      return data;
+    }
+
+    async function pgpRecipientKeys(toEmails) {
+      const contacts = JSON.parse(localStorage.getItem(LS_CONTACTS) || '{}');
+      const pubs = [];
+      for (const em of toEmails) {
+        const c = contacts[String(em).toLowerCase().trim()];
+        if (c) pubs.push(await openpgp.readKey({ armoredKey: c }));
+      }
+      if (!pubs.length) throw new Error('No saved public key for: ' + toEmails.join(', '));
+      return pubs;
+    }
+
+    async function encryptBody(plain, toEmails) {
+      const msg = await openpgp.createMessage({ text: plain });
+      return openpgp.encrypt({ message: msg, encryptionKeys: await pgpRecipientKeys(toEmails) });
+    }
+
+    function b64ToBytes(b64) {
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+
+    async function encryptAttachments(atts, toEmails) {
+      const keys = await pgpRecipientKeys(toEmails);
+      const out = [];
+      for (const a of atts) {
+        const msg = await openpgp.createMessage({ binary: b64ToBytes(a.data_b64) });
+        const armored = await openpgp.encrypt({ message: msg, encryptionKeys: keys });
+        // armor is ASCII text; base64-wrap it so the server's b64decode round-trips it verbatim
+        out.push({ name: a.name + '.pgp', data_b64: btoa(armored) });
+      }
+      return out;
+    }
+
+    async function localClassify(text) {
+      const cfg = JSON.parse(localStorage.getItem(LS_AIKEY) || 'null');
+      if (!cfg || !cfg.key) return null;
+      try {
+        const r = await fetch(cfg.endpoint || 'https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.key },
+          body: JSON.stringify({ model: cfg.model || 'gpt-4o-mini', messages: [
+            { role: 'system', content: 'Classify an email. Reply with ONLY JSON: {"priority":"needs_reply|waiting|fyi|noise","summary":"one line"}' },
+            { role: 'user', content: text.slice(0, 8000) }] })
+        });
+        const j = await r.json();
+        const c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
+        return JSON.parse(c.replace(/```json|```/g, '').trim());
+      } catch (e) { console.warn('local AI failed:', e); return null; }
+    }
+
+    function renderPGPUI() {
+      const hasKey = !!localStorage.getItem(LS_PRIV);
+      const hk = $('#pgpHasKey'), nk = $('#pgpNoKey');
+      if (hk) hk.hidden = !hasKey;
+      if (nk) nk.hidden = hasKey;
+      const fpr = $('#pgpFpr');
+      if (fpr) fpr.textContent = hasKey ? (pgpPriv ? pgpPriv.getFingerprint().slice(0, 16) : 'key present') : '';
+      const list = $('#pgpContactList');
+      if (list) {
+        const contacts = JSON.parse(localStorage.getItem(LS_CONTACTS) || '{}');
+        const keys = Object.keys(contacts);
+        list.innerHTML = keys.length ? '<span>Saved: ' + keys.map(k => '<code>' + esc(k) + '</code>').join(' · ') + '</span>' : '<span style="color:var(--faint)">No recipient keys saved.</span>';
+      }
+      const aiKey = $('#aiKey'), aiModel = $('#aiModel'), aiEndpoint = $('#aiEndpoint');
+      const cfg = JSON.parse(localStorage.getItem(LS_AIKEY) || 'null');
+      if (aiKey) aiKey.value = (cfg && cfg.key) || '';
+      if (aiModel) aiModel.value = (cfg && cfg.model) || 'gpt-4o-mini';
+      if (aiEndpoint) aiEndpoint.value = (cfg && cfg.endpoint) || 'https://api.openai.com/v1/chat/completions';
+      if (typeof updateEncBadge === 'function') updateEncBadge(typeof encAtRestLast !== 'undefined' && encAtRestLast);
+    }
+
+    function wirePGPUI() {
+      const gen = $('#pgpGen'); if (gen) gen.onclick = async () => {
+        try {
+          const pub = await generatePGP($('#pgpPass').value.trim() || undefined);
+          renderPGPUI(); toast('PGP keypair generated — public key:');
+          window.prompt('Your public key (share this so others can send you encrypted mail) — copied to clipboard:', pub);
+          try { navigator.clipboard.writeText(pub); } catch (e) { }
+          updateEncBadge(encAtRestLast);
+        } catch (e) { toast('Key generation failed: ' + e.message); }
+      };
+      const imp = $('#pgpImport'); if (imp) imp.onclick = async () => {
+        try {
+          const armor = window.prompt('Paste your private key (armored):');
+          if (!armor) return;
+          await openpgp.readKey({ armoredKey: armor });
+          localStorage.setItem(LS_PRIV, armor);
+          await loadPGP(); renderPGPUI(); updateEncBadge(encAtRestLast);
+          toast('Private key imported.');
+        } catch (e) { toast('Invalid key: ' + e.message); }
+      };
+      const copy = $('#pgpCopyPub'); if (copy) copy.onclick = async () => {
+        const armor = localStorage.getItem(LS_PRIV);
+        if (!armor) return;
+        const priv = await openpgp.readKey({ armoredKey: armor });
+        navigator.clipboard.writeText(priv.toPublic().armor()).then(() => toast('Public key copied.'), () => toast('Copy failed.'));
+      };
+      const del = $('#pgpDel'); if (del) del.onclick = () => {
+        if (window.confirm('Remove the PGP key from this browser? Encrypted mail will no longer be readable here.')) {
+          localStorage.removeItem(LS_PRIV); pgpPriv = null; pgpPass = '';
+          renderPGPUI(); updateEncBadge(encAtRestLast); toast('Key removed.');
+        }
+      };
+      const addC = $('#pgpAddContact'); if (addC) addC.onclick = async () => {
+        const em = $('#pgpContactEmail').value.trim().toLowerCase();
+        const armor = $('#pgpContactKey').value.trim();
+        if (!em || !armor) { toast('Enter an email and a public key.'); return; }
+        try {
+          await openpgp.readKey({ armoredKey: armor });
+          const contacts = JSON.parse(localStorage.getItem(LS_CONTACTS) || '{}');
+          contacts[em] = armor;
+          localStorage.setItem(LS_CONTACTS, JSON.stringify(contacts));
+          $('#pgpContactKey').value = '';
+          renderPGPUI(); toast('Key saved for ' + em);
+        } catch (e) { toast('Invalid public key.'); }
+      };
+      const aiSave = $('#aiSave'); if (aiSave) aiSave.onclick = () => {
+        localStorage.setItem(LS_AIKEY, JSON.stringify({
+          key: $('#aiKey').value.trim(), model: $('#aiModel').value.trim() || 'gpt-4o-mini',
+          endpoint: $('#aiEndpoint').value.trim() || 'https://api.openai.com/v1/chat/completions'
+        }));
+        toast('Local AI settings saved (browser only).');
+      };
     }
 
     /* ===== ACCOUNTS: PROFILE LINKS / IMPORT / DELEGATION ===== */
@@ -8854,25 +9104,70 @@
     };
     $('#cmpCancelBtn').onclick = () => { $('#cmpov').classList.remove('open'); };
     $('#cmpov').onclick = e => { if (e.target === $('#cmpov')) $('#cmpov').classList.remove('open'); };
+
+    /* ===== COMPOSE ATTACHMENTS ===== */
+    let cmpAtts = []; // {name, data_b64, size}
+    function renderCmpAtts() {
+      const el = $('#cmpAttChips'); if (!el) return;
+      el.innerHTML = cmpAtts.map((a, i) => '<span class="attchip">' + esc(a.name) + ' · ' + Math.max(1, Math.round(a.size / 1024)) + ' KB <button class="linkbtn" data-rm="' + i + '">✕</button></span>').join('');
+      el.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { cmpAtts.splice(Number(b.dataset.rm), 1); renderCmpAtts(); });
+    }
+    function fileToB64(file) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+          const buf = new Uint8Array(fr.result);
+          let bin = '';
+          for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+          resolve(btoa(bin));
+        };
+        fr.onerror = reject;
+        fr.readAsArrayBuffer(file);
+      });
+    }
+    $('#cmpFiles').onchange = async e => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = '';
+      for (const f of files) {
+        try { cmpAtts.push({ name: f.name, size: f.size, data_b64: await fileToB64(f) }); }
+        catch (err) { toast('Could not read ' + f.name); }
+      }
+      renderCmpAtts();
+    };
     $('#cmpSendBtn').onclick = () => {
       const to = $('#cmpTo').value.trim();
       const subj = $('#cmpSubj').value.trim();
       const body = $('#cmpBody').value.trim();
       if (!to) { toast('Enter a recipient email address.'); return; }
       const btn = $('#cmpSendBtn');
-      const doSend = () => {
+      const doSend = async () => {
         btn.disabled = true; btn.textContent = 'Sending…';
         const finish = (undoMsg, undoFn) => {
           $('#cmpov').classList.remove('open');
           $('#cmpTo').value = ''; $('#cmpSubj').value = ''; $('#cmpBody').value = '';
+          cmpAtts = []; renderCmpAtts();
           btn.disabled = false; btn.textContent = 'Send';
           bumpStat('sent');
           if (typeof PS !== 'undefined' && PS && PS.undo && undoFn) toast(undoMsg, undoFn);
           else toast(undoMsg);
         };
+        let outBody = body, outSubj = subj, outAtts = cmpAtts.map(a => ({ name: a.name, data_b64: a.data_b64 }));
+        const encOn = $('#cmpEnc') && $('#cmpEnc').checked;
         if (LIVE && tok()) {
+          if (encOn) {
+            btn.textContent = 'Encrypting…';
+            try {
+              outBody = await encryptBody('Subject: ' + (subj || '(no subject)') + '\n\n' + body, [to]);
+              outSubj = '🔒 Encrypted message'; // real subject travels inside the encrypted body
+              outAtts = await encryptAttachments(cmpAtts, [to]); // attachments encrypted too — never plaintext
+            } catch (e) {
+              btn.disabled = false; btn.textContent = 'Send';
+              toast('Encrypt failed: ' + (e && e.message || 'unknown error'));
+              return;
+            }
+          }
           const bcc = (typeof PS !== 'undefined' && PS && PS.autoBcc) ? PS.autoBcc : '';
-          api('/api/mail/send', { method: 'POST', body: { to, subject: subj || '(no subject)', body, name: myName(), bcc } })
+          api('/api/mail/send', { method: 'POST', body: { to, subject: outSubj || '(no subject)', body: outBody, name: myName(), bcc, attachments: outAtts } })
             .then(() => finish('Message sent to ' + to + ' ✓', () => {
               $('#cmpTo').value = to; $('#cmpSubj').value = subj; $('#cmpBody').value = body;
               $('#cmpov').classList.add('open'); toast('Send undone — draft restored');
@@ -8989,6 +9284,10 @@
       // Toggle password visibility
       const togglePassBtn = $('#epTogglePass');
       if (togglePassBtn) togglePassBtn.addEventListener('click', epTogglePass);
+
+      // PGP: load browser-held keys and wire the settings UI
+      loadPGP().then(renderPGPUI);
+      wirePGPUI();
     });
 
     /* ===== CONNECT GMAIL BANNER (for email-password users) ===== */

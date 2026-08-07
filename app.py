@@ -23,6 +23,8 @@ import asyncio, base64, json, logging, re, time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr, parseaddr
 from typing import List
 from urllib.parse import urlparse
@@ -148,6 +150,7 @@ class Message(Base):
     att_count = Column(Integer, default=0)
     att_names = Column(Text)
     list_unsub = Column(String(512), nullable=True)
+    encrypted = Column(Boolean, default=False)
     classification = relationship("Classification", uselist=False, back_populates="message",
                                   cascade="all, delete-orphan", passive_deletes=True)
 
@@ -302,7 +305,7 @@ def mail_to_frontend(m):
             "co": pretty_domain(m.from_addr), "dom": _host_of(m.from_addr), "tag": _PR_TO_TAG.get(priority),
             "subj": m.subject or "(no subject)", "snip": m.snippet or "", "time": time_s, "day": day_s,
             "unread": 0 if m.is_read else 1, "star": 1 if m.is_starred else 0, "pr": pr, "cluster": None,
-            "d": _depth(m), "to": m.to_addr,
+            "d": _depth(m), "to": m.to_addr, "enc": bool(m.encrypted),
             "body": m.body or "",
             "topic": _topic(m), "draft": cls.draft_body if cls else None, "tsum": cls.summary if cls else None,
             "cat": cats[0] if cats else None,
@@ -687,11 +690,16 @@ def parse_message(msg):
     payload = msg.get("payload",{}); frm = _header(msg,"From"); name, addr = parseaddr(frm)
     internal = msg.get("internalDate")
     received = datetime.utcfromtimestamp(int(internal)/1000) if internal else datetime.utcnow()
+    body = _body_extract(payload)
     return {"gmail_id": msg["id"], "thread_id": msg.get("threadId"), "message_id_header": _header(msg,"Message-ID"),
             "from_name": name or addr.split("@")[0], "from_addr": addr or frm, "to_addr": _header(msg,"To"),
-            "subject": _header(msg,"Subject"), "snippet": msg.get("snippet",""), "body": _body_extract(payload),
+            "subject": _header(msg,"Subject"), "snippet": msg.get("snippet",""), "body": body,
             "received_at": received, "labels": msg.get("labelIds", []),
-            "att_count": _att_count(payload), "att_names": _att_names(payload), "list_unsub": _header(msg, "List-Unsubscribe")}
+            "att_count": _att_count(payload), "att_names": _att_names(payload), "list_unsub": _header(msg, "List-Unsubscribe"),
+            "encrypted": _is_pgp(body)}
+
+def _is_pgp(body):
+    return bool(body and "-----BEGIN PGP MESSAGE-----" in body)
 
 def folder_from_labels(labels):
     s = set(labels); starred = "STARRED" in s; read = "UNREAD" not in s
@@ -742,8 +750,12 @@ async def apply_snooze(account, gmail_id, db):
     except Exception as e: log.warning("snooze modify failed: %s", e)
     await persist_refreshed(account, creds, db)
 
-async def send_raw(account, to, subject, body, db, in_reply_to=None, references=None, from_addr=None, sender_name=None, bcc=None):
-    msg = MIMEText(body,"plain","utf-8"); msg["To"] = to; msg["Subject"] = subject
+async def send_raw(account, to, subject, body, db, in_reply_to=None, references=None, from_addr=None, sender_name=None, bcc=None, attachments=None):
+    has_att = bool(attachments)
+    msg = MIMEMultipart() if has_att else MIMEText(body, "plain", "utf-8")
+    if has_att:
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+    msg["To"] = to; msg["Subject"] = subject
     if bcc:
         msg["Bcc"] = bcc.strip()
     disp = (sender_name or "").strip() or account.display_name or ""
@@ -753,6 +765,12 @@ async def send_raw(account, to, subject, body, db, in_reply_to=None, references=
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = " ".join(filter(None, [references, in_reply_to]))
+    if has_att:
+        for a in attachments:
+            fname = "".join(ch for ch in (a.name or "attachment") if ch.isalnum() or ch in "._- ")[:120] or "attachment"
+            att = MIMEApplication(base64.b64decode(a.data_b64), name=fname)
+            att.add_header("Content-Disposition", "attachment", filename=fname)
+            msg.attach(att)
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     service, creds = _service(account); sent = await bcall(lambda: service.users().messages().send(userId="me", body={"raw":raw}).execute())
     await persist_refreshed(account, creds, db); return sent["id"]
@@ -1031,7 +1049,8 @@ async def _process_page(db, account, service, events):
     ids = [e["gmail_id"] for e in events]
     if not ids: return 0,0,0,0,[],False
     existing_rows = (await db.execute(select(Message.id, Message.gmail_id, Message.snippet, Message.body,
-                                             Message.folder, Message.is_read, Message.is_starred, Message.att_count)
+                                             Message.folder, Message.is_read, Message.is_starred, Message.att_count,
+                                             Message.encrypted)
                      .where(Message.account_id == account.id, Message.gmail_id.in_(ids)))).all()
     existing = {r.gmail_id: r for r in existing_rows}
     new_events = [e for e in events if e["gmail_id"] not in existing]
@@ -1047,20 +1066,26 @@ async def _process_page(db, account, service, events):
                 fulls.append(r)
     classes = []
     if fulls:
-        cres = await asyncio.gather(*(bcall(classify, f["from_name"], f["from_addr"], f["subject"], f["body"]) for f in fulls), return_exceptions=True)
-        for f, r in zip(fulls, cres):
-            if isinstance(r, Exception):
-                log.warning("classify failed for %s; defaulting", f["gmail_id"], exc_info=r)
-                classes.append((3, "fyi", "", None))
-            else:
-                classes.append(r)
+        plain = [f for f in fulls if not f.get("encrypted")]
+        by_id = {}
+        if plain:
+            cres = await asyncio.gather(*(bcall(classify, f["from_name"], f["from_addr"], f["subject"], f["body"]) for f in plain), return_exceptions=True)
+            for f, r in zip(plain, cres):
+                if isinstance(r, Exception):
+                    log.warning("classify failed for %s; defaulting", f["gmail_id"], exc_info=r)
+                    by_id[f["gmail_id"]] = (3, "fyi", "", None)
+                else:
+                    by_id[f["gmail_id"]] = r
+        # E2E: encrypted bodies are ciphertext — the server never runs an LLM on them
+        classes = [by_id.get(f["gmail_id"], (3, "fyi", "", None)) for f in fulls]
     new_ids = []
     for f,(pr,intent,summary,draft) in zip(fulls, classes):
         folder,read,star = folder_from_labels(f["labels"])
         m = Message(account_id=account.id, gmail_id=f["gmail_id"], thread_id=f["thread_id"], message_id_header=f["message_id_header"],
                     from_name=f["from_name"], from_addr=f["from_addr"], to_addr=f["to_addr"], subject=f["subject"], snippet=f["snippet"],
                     body=f["body"], received_at=f["received_at"], folder=folder, is_read=read, is_starred=star, raw_labels=",".join(f["labels"] or []),
-                    att_count=f.get("att_count", 0), att_names=f.get("att_names"), list_unsub=f.get("list_unsub") or None)
+                    att_count=f.get("att_count", 0), att_names=f.get("att_names"), list_unsub=f.get("list_unsub") or None,
+                    encrypted=f.get("encrypted", False))
         db.add(m); await db.flush()
         db.add(Classification(message_id=m.id, priority=pr, intent=intent, summary=summary, draft_body=(draft or None), model=settings.llm_model))
         new_ids.append(m.id)
@@ -1076,6 +1101,7 @@ async def _process_page(db, account, service, events):
                 if folder != r.folder or read != r.is_read or star != r.is_starred:
                     updates.update(folder=folder, is_read=read, is_starred=star)
                 if full.get("snippet") and full["snippet"] != r.snippet: updates["snippet"] = full["snippet"]
+                if full.get("encrypted") and not r.encrypted: updates["encrypted"] = True
                 if full.get("body") and "<" in full["body"] and (r.body is None or "<" not in r.body): updates["body"] = full["body"]
                 if full.get("att_count") is not None and full["att_count"] != r.att_count: updates["att_count"] = full["att_count"]
                 if full.get("att_names") and full["att_names"] != r.att_names: updates["att_names"] = full["att_names"]
@@ -1191,8 +1217,11 @@ async def run_sync(account, db):
             "duration_ms":int((time.perf_counter()-t0)*1000),"status":ss.status,"mode":ss.mode,"partial":partial,"error":ss.last_error}
 
 # ============================ REQUEST BODIES ============================
+class AttachmentIn(BaseModel):
+    name: str = "attachment"; data_b64: str = ""
+
 class SendIn(BaseModel):
-    to: EmailStr; subject: str = ""; body: str = ""; name: str = ""; bcc: str = ""
+    to: EmailStr; subject: str = ""; body: str = ""; name: str = ""; bcc: str = ""; attachments: List[AttachmentIn] = []
 class ReplyIn(BaseModel):
     body: str
 class DraftIn(BaseModel):
@@ -1964,7 +1993,7 @@ async def mail_get(mid: int, account: Account = Depends(get_current_account), db
     m = await _msg(db, account, mid)
     # If the stored body has no HTML markup (legacy plain-text sync), re-fetch the full
     # message from Gmail so we can extract and serve the text/html part.
-    if m.gmail_id and (not m.body or "<" not in m.body):
+    if m.gmail_id and not m.encrypted and (not m.body or "<" not in m.body):
         try:
             service, _ = _service(account)
             full = await bcall(get_full_by_service, service, m.gmail_id)
@@ -2020,9 +2049,10 @@ async def mail_draft(mid: int, payload: DraftIn, account: Account = Depends(get_
 async def mail_send(payload: SendIn, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
     if not account.refresh_token and not account.access_token: raise HTTPException(400, "Gmail not connected")
     send_name = (payload.name or "").strip() or account.display_name or account.email.split("@")[0]
-    gid = await send_raw(account, payload.to, payload.subject or "(no subject)", payload.body, db, from_addr=account.email, sender_name=send_name, bcc=payload.bcc or None)
+    gid = await send_raw(account, payload.to, payload.subject or "(no subject)", payload.body, db, from_addr=account.email, sender_name=send_name, bcc=payload.bcc or None, attachments=payload.attachments or None)
     m = Message(account_id=account.id, gmail_id=gid, from_name=send_name, from_addr=account.email, to_addr=payload.to,
-                subject=payload.subject, snippet=(payload.body.splitlines() or [""])[0][:120], body=payload.body, folder="sent", is_read=True)
+                subject=payload.subject, snippet=(payload.body.splitlines() or [""])[0][:120], body=payload.body, folder="sent", is_read=True,
+                encrypted=_is_pgp(payload.body))
     db.add(m); await db.commit(); return {"ok": True, "id": m.id, "gmail_id": gid}
 
 @mail_router.post("/{mid}/reply")
@@ -2034,12 +2064,15 @@ async def mail_reply(mid: int, payload: ReplyIn, account: Account = Depends(get_
     send_name = account.display_name or account.email.split("@")[0]
     gid = await send_raw(account, m.from_addr, subj, payload.body, db, in_reply_to=m.message_id_header, references=m.message_id_header, from_addr=account.email, sender_name=send_name)
     out = Message(account_id=account.id, gmail_id=gid, thread_id=m.thread_id, from_name=send_name, from_addr=account.email, to_addr=m.from_addr,
-                  subject=subj, snippet=(payload.body.splitlines() or [""])[0][:120], body=payload.body, folder="sent", is_read=True)
+                  subject=subj, snippet=(payload.body.splitlines() or [""])[0][:120], body=payload.body, folder="sent", is_read=True,
+                  encrypted=_is_pgp(payload.body))
     db.add(out); await db.commit(); return {"ok": True, "id": out.id, "to": m.from_addr, "gmail_id": gid}
 
 @mail_router.post("/{mid}/ai-reply")
 async def mail_ai_reply(mid: int, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
-    m = await _msg(db, account, mid); draft = await bcall(draft_reply, m.from_name or "", m.subject or "", m.body or "")
+    m = await _msg(db, account, mid)
+    if m.encrypted: raise HTTPException(400, "Encrypted message — the server cannot read it. AI drafts run in your browser with a local AI key.")
+    draft = await bcall(draft_reply, m.from_name or "", m.subject or "", m.body or "")
     cls = m.classification or Classification(message_id=m.id); cls.draft_body = draft
     if m.classification is None: db.add(cls)
     await db.commit(); return {"reply": draft}
@@ -2455,7 +2488,8 @@ async def lifespan(app: FastAPI):
             # lightweight column migration for columns added after v1.3 (safe no-op if present)
             for col_sql in ("ALTER TABLE messages ADD COLUMN att_count INTEGER DEFAULT 0",
                             "ALTER TABLE messages ADD COLUMN list_unsub VARCHAR(512)",
-                            "ALTER TABLE messages ADD COLUMN att_names TEXT"):
+                            "ALTER TABLE messages ADD COLUMN att_names TEXT",
+                            "ALTER TABLE messages ADD COLUMN encrypted BOOLEAN DEFAULT 0"):
                 try:
                     async with engine.begin() as conn:
                         await conn.exec_driver_sql(col_sql)

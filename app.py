@@ -1253,7 +1253,7 @@ async def login(body: LoginIn, db: AsyncSession = Depends(get_session)):
 OAUTH_SCOPES = ["openid","https://www.googleapis.com/auth/gmail.modify","https://www.googleapis.com/auth/gmail.send","https://www.googleapis.com/auth/userinfo.email"]
 _STATE_ALG = "HS256"
 
-def _sign_state(redirect): return jwt.encode({"r":redirect,"exp":time.time()+600}, settings.auth_jwt_secret, algorithm=_STATE_ALG)
+def _sign_state(redirect): return jwt.encode({"r":redirect,"exp":time.time()+3600}, settings.auth_jwt_secret, algorithm=_STATE_ALG)
 def _read_state(state):
     try: return jwt.decode(state, settings.auth_jwt_secret, algorithms=[_STATE_ALG])["r"]
     except Exception: raise HTTPException(400,"Invalid OAuth state")

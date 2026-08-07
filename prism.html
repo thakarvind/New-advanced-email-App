@@ -7849,8 +7849,14 @@
       if (!force && Date.now() < _syncMin) return;
       _syncBusy = true; _syncMin = Date.now() + 30000;
       (async () => {
+        let _partial = false;
         try {
-          try { await api('/api/sync', { method: 'POST' }); } catch (e) { }
+          try {
+            const syncResp = await api('/api/sync', { method: 'POST' });
+            // Backlog drain: if the server time-boxed the sync (Vercel 10s limit),
+            // keep pulling until the mailbox is fully drained.
+            _partial = !!(syncResp && (syncResp.partial || (syncResp.status === 'running')));
+          } catch (e) { }
           const mailData = await api('/api/mail?folder=inbox&limit=1000');
           if (Array.isArray(mailData) && mailData.length) {
             const byId = new Map(T.map(t => [t.id, true]));
@@ -7868,7 +7874,11 @@
             rc(); rr(); uc();
           }
         } catch (e) { }
-        finally { _syncBusy = false; }
+        finally {
+          _syncBusy = false;
+          // Keep draining the backlog: retry in a few seconds if the last sync was time-boxed
+          if (_partial && LIVE && tok()) setTimeout(() => syncLive(true), 4000);
+        }
       })();
     }
     function startAutoSync() {

@@ -1048,12 +1048,23 @@ async def _process_page(db, account, service, events):
     new_events = [e for e in events if e["gmail_id"] not in existing]
     exist_events = [e for e in events if e["gmail_id"] in existing]
     fulls = []
-    for e in new_events:
-        try: fulls.append(await bcall(get_full_by_service, service, e["gmail_id"]))
-        except GmailAuthError: raise
-        except Exception:
-            log.warning("get_full failed for %s; skipping message", e["gmail_id"], exc_info=True)
-    classes = [await bcall(classify, f["from_name"], f["from_addr"], f["subject"], f["body"]) for f in fulls]
+    if new_events:
+        res = await asyncio.gather(*(bcall(get_full_by_service, service, e["gmail_id"]) for e in new_events), return_exceptions=True)
+        for e, r in zip(new_events, res):
+            if isinstance(r, GmailAuthError): raise r
+            if isinstance(r, Exception):
+                log.warning("get_full failed for %s; skipping message", e["gmail_id"], exc_info=r)
+            else:
+                fulls.append(r)
+    classes = []
+    if fulls:
+        cres = await asyncio.gather(*(bcall(classify, f["from_name"], f["from_addr"], f["subject"], f["body"]) for f in fulls), return_exceptions=True)
+        for f, r in zip(fulls, cres):
+            if isinstance(r, Exception):
+                log.warning("classify failed for %s; defaulting", f["gmail_id"], exc_info=r)
+                classes.append((3, "fyi", "", None))
+            else:
+                classes.append(r)
     new_ids = []
     for f,(pr,intent,summary,draft) in zip(fulls, classes):
         folder,read,star = folder_from_labels(f["labels"])
@@ -1117,7 +1128,7 @@ def _history_to_events(resp):
 async def _run_incremental(db, account, service, ss):
     f=i=u=s=0; new_ids=[]; hpt=None; head=ss.last_history_id; partial=False; t0=time.perf_counter()
     for _ in range(MAX_PAGES):
-        if time.perf_counter() - t0 > SYNC_BUDGET_S: break
+        if time.perf_counter() - t0 > SYNC_BUDGET_S: partial=True; break
         resp = await bcall(list_history_page, service, ss.last_history_id, hpt, PAGE_SIZE)
         events, head, nxt = _history_to_events(resp)
         df,di,du,ds,dn,failed = await _process_page(db, account, service, events)
@@ -1129,11 +1140,11 @@ async def _run_incremental(db, account, service, ss):
 
 
 async def _run_full(db, account, service, ss):
-    f=i=u=s=0; new_ids=[]; page_token=ss.page_token; full_done=False; t0=time.perf_counter()
+    f=i=u=s=0; new_ids=[]; page_token=ss.page_token; full_done=False; t0=time.perf_counter(); budget_hit=False
     for _ in range(MAX_PAGES):
         if time.perf_counter() - t0 > SYNC_BUDGET_S:
             # Vercel kills the function ~10s; stop cleanly, resume via page_token next call
-            break
+            budget_hit = True; break
         items, nxt = await bcall(list_messages_page, service, page_token, PAGE_SIZE, q="-in:trash -in:spam")
         events = [{"gmail_id":it["id"],"kind":"add","snippet":None,"labels":None} for it in (items or [])]
         df,di,du,ds,dn,failed = await _process_page(db, account, service, events)
@@ -1141,7 +1152,7 @@ async def _run_full(db, account, service, ss):
         if failed: await db.commit(); return f,i,u,s,new_ids,False,True
         page_token = nxt; ss.page_token = nxt; await db.commit()
         if not nxt: full_done = True; break
-    return f,i,u,s,new_ids,full_done,False
+    return f,i,u,s,new_ids,full_done,budget_hit
 
 async def run_sync(account, db):
     t0 = time.perf_counter(); ss = await _get_or_create_ss(db, account.id)

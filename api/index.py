@@ -11,7 +11,7 @@ _on_vercel = bool(os.environ.get("VERCEL"))
 # Guard 1: DATABASE_URL must be a real DB URL. A bare string (e.g. the app's
 # own URL pasted into the dashboard) would crash create_async_engine at import.
 _db_url = os.environ.get("DATABASE_URL", "")
-if _on_vercel and (not _db_url or not _db_url.startswith(("postgres", "sqlite"))):
+if _on_vercel and not _db_url.startswith("postgres"):
     os.environ["DATABASE_URL"] = "sqlite+aiosqlite:////tmp/prism.db"
 
 # Guard 2: FRONTEND_ORIGINS must be a JSON list. A plain string (a common

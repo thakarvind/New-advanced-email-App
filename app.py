@@ -1329,7 +1329,7 @@ async def auth_callback(request: Request, db: AsyncSession = Depends(get_session
     if request.query_params.get("error") or not _origin_allowed(redirect, request):
         log.warning("oauth callback rejected: err=%r state_len=%d redirect=%r", request.query_params.get("error"), len(state), redirect)
         target = redirect or (settings.parsed_frontend_origins[0] if settings.parsed_frontend_origins else settings.app_base_url)
-        err_msg = f"{_reject_reason} [state_len={len(state)} vercel={os.environ.get('VERCEL')!r} origins={settings.parsed_frontend_origins}]"
+        err_msg = f"{_reject_reason} [state_len={len(state)} vercel={os.environ.get('VERCEL')!r} origins={settings.parsed_frontend_origins} redirect={redirect!r} base={str(request.base_url).rstrip('/')!r} host={request.headers.get('host')!r}]"
         sep = "&" if "?" in target else "?"; return RedirectResponse(target + sep + "error=" + quote_plus(err_msg))
     redirect_uri = settings.resolve_gmail_redirect_uri(request)
     flow = Flow.from_client_config(settings.google_client_config(request), scopes=OAUTH_SCOPES); flow.redirect_uri = redirect_uri

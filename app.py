@@ -980,16 +980,16 @@ def _is_auth_error(e):
     except Exception: pass
     return type(e).__name__ in {"InvalidGrantError","RefreshError","UserRefreshError"}
 
-async def bcall(fn, *args):
-    try: return await asyncio_to_thread(fn, *args)
+async def bcall(fn, *args, **kwargs):
+    try: return await asyncio_to_thread(fn, *args, **kwargs)
     except GmailAuthError: raise
     except Exception as e:
         if _is_auth_error(e): raise GmailAuthError(str(e)) from e
         raise
 
-async def asyncio_to_thread(fn, *args):
+async def asyncio_to_thread(fn, *args, **kwargs):
     import asyncio
-    return await asyncio.to_thread(fn, *args)
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 async def _get_or_create_ss(db, account_id):
     row = (await db.execute(select(SyncState).where(SyncState.account_id == account_id))).scalar_one_or_none()

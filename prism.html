@@ -7856,7 +7856,10 @@
             // Backlog drain: if the server time-boxed the sync (Vercel 10s limit),
             // keep pulling until the mailbox is fully drained.
             _partial = !!(syncResp && syncResp.status === 'partial');
-          } catch (e) { }
+          } catch (e) {
+            // 409 = another sync is in flight right now; retry shortly (drain loop)
+            if (e && e.body && e.body.detail && e.body.detail.error === 'sync_in_progress') _partial = true;
+          }
           const mailData = await api('/api/mail?folder=inbox&limit=1000');
           if (Array.isArray(mailData) && mailData.length) {
             const byId = new Map(T.map(t => [t.id, true]));

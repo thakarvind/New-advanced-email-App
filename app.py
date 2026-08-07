@@ -960,13 +960,13 @@ async def cluster_messages(account_id, message_ids, db):
     await db.commit()
 
 # ============================ SYNC ============================
-PAGE_SIZE = 50; MAX_PAGES = 4; SYNC_LOCK_NS = 0x5052_4953
+PAGE_SIZE = 50; MAX_PAGES = 4
 SYNC_BUDGET_S = 8.0  # time-box per sync call: Vercel kills functions at ~10s; resume via page_token next call
 if os.environ.get("VERCEL"):
     PAGE_SIZE = 10  # each sync call must finish < 10s: fewer full-body fetches per page
 
 # In-process asyncio locks for SQLite (one per account_id)
-_sync_locks: dict[int, asyncio.Lock] = {}
+_sync_locks: dict[int, asyncio.Lock] = {}  # ponytail: unused since advisory lock removal; kept for local dev serialization if needed
 
 class GmailAuthError(Exception): pass
 class SyncInProgress(Exception):
@@ -1008,34 +1008,6 @@ async def read_status(db, account_id):
             "updated":row.updated,"skipped":row.skipped,"full_sync_completed":bool(row.full_sync_completed),"last_history_id":row.last_history_id,
             "started_at":row.started_at.isoformat() if row.started_at else None,"heartbeat_at":row.heartbeat_at.isoformat() if row.heartbeat_at else None,
             "finished_at":row.finished_at.isoformat() if row.finished_at else None,"last_error":row.last_error}
-
-@asynccontextmanager
-async def acquire_sync_lock(db, account_id):
-    """Dialect-aware sync lock: PostgreSQL advisory locks in prod, asyncio.Lock for SQLite dev."""
-    if engine.dialect.name == "postgresql":
-        got = (await db.execute(
-            text("SELECT pg_try_advisory_lock(:ns, :id) AS ok"),
-            {"ns": SYNC_LOCK_NS, "id": int(account_id)}
-        )).scalar()
-        if not got:
-            raise SyncInProgress(await read_status(db, account_id))
-        try:
-            yield
-        finally:
-            try:
-                await db.execute(
-                    text("SELECT pg_advisory_unlock(:ns, :id)"),
-                    {"ns": SYNC_LOCK_NS, "id": int(account_id)}
-                )
-            except Exception:
-                log.warning("advisory unlock failed for account %s", account_id, exc_info=True)
-    else:
-        # SQLite / any non-Postgres dialect: use a per-account in-process asyncio.Lock
-        lock = _sync_locks.setdefault(int(account_id), asyncio.Lock())
-        if lock.locked():
-            raise SyncInProgress(await read_status(db, account_id))
-        async with lock:
-            yield
 
 async def _process_page(db, account, service, events):
     events = [e for e in events if e.get("gmail_id")]
@@ -2203,14 +2175,16 @@ async def sync_post(account: Account = Depends(get_current_account), db: AsyncSe
     if not account.access_token and not account.refresh_token:
         raise HTTPException(401, detail={"error": "gmail_not_connected", "hint": _reauth_hint()})
     try:
-        # Check if sync already completed recently — skip if done
+        # Re-entry guard: no DB lock (advisory locks leak on pgbouncer when Vercel kills the function).
+        # A fresh "running" row means a sync is in flight — tell the client to retry. A stale one
+        # (>120s, i.e. the function was killed) is reset so this call can resume.
         ss = await _get_or_create_ss(db, account.id)
         if ss.status == "running" and ss.started_at and (datetime.utcnow() - ss.started_at).total_seconds() > 120:
-            # Stale run (Vercel killed the function mid-sync): reset so the next call can proceed
             ss.status = "partial"; ss.finished_at = datetime.utcnow(); ss.last_error = "previous sync was interrupted"; await db.commit()
-        # Acquire lock and run sync with timeout to prevent hanging
-        async with acquire_sync_lock(db, account.id):
-            summary = await asyncio.wait_for(run_sync(account, db), timeout=120)
+        if ss.status == "running":
+            raise SyncInProgress(await read_status(db, account.id))
+        # Run sync with timeout to prevent hanging
+        summary = await asyncio.wait_for(run_sync(account, db), timeout=120)
         return summary
     except SyncInProgress as e: raise HTTPException(409, detail={"error": "sync_in_progress", "progress": e.progress})
     except GmailAuthError as e: raise HTTPException(401, detail={"error": "gmail_auth_expired", "message": str(e), "hint": _reauth_hint()})

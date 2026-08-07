@@ -4549,18 +4549,6 @@
       transition: opacity .6s cubic-bezier(.55, 0, .3, 1), visibility 0s .7s
     }
 
-    .boot .boot-logo {
-      position: absolute;
-      left: 50%;
-      top: 9%;
-      transform: translateX(-50%);
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      object-fit: cover;
-      filter: drop-shadow(0 0 18px rgba(0, 0, 0, .9)) drop-shadow(0 0 42px rgba(0, 0, 0, .55))
-    }
-
     .boot .brand-word {
       font-size: 58px;
       font-weight: 800;
@@ -5653,7 +5641,6 @@
 
   <!-- boot splash -->
   <div class="boot" id="boot">
-    <img class="boot-logo" src="Screenshot 2026-08-02 213509.png" alt="Prism">
     <div class="bar"><i></i></div>
     <div class="blip"></div>
     <div class="sheen"></div>
@@ -6345,7 +6332,7 @@
   <main class="shell">
     <div class="gold" id="gold"></div>
     <aside class="sb">
-      <div class="logo"><img class="logo-img" src="Screenshot 2026-08-02 213509.png" alt="Prism">Prism<span class="badge">AI</span></div>
+      <div class="logo"><img class="logo-img" src="app icon neon.jpg" alt="Prism">Prism<span class="badge">AI</span></div>
       <button class="comp" id="compBtn">＋&nbsp; Compose</button>
       <nav id="fn">
         <button class="ni act" data-f="inbox"><svg viewBox="0 0 24 24">
@@ -6481,6 +6468,28 @@
     (function () {
       const m = /[#&]prism_token=([^&]+)/.exec(location.hash || '');
       if (m) { setTok(decodeURIComponent(m[1])); history.replaceState(null, '', location.pathname + location.search); }
+    })();
+
+    /* Refresh rate limit: normal refreshes keep you signed in, but >5 reloads in 60s
+       is treated as a possible session-replay/brute attempt — force re-login. */
+    (function () {
+      try {
+        const KEY = 'prism_refresh_marks', MAX = 5, WINDOW = 60000;
+        let marks = [];
+        try { marks = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { }
+        const now = Date.now();
+        marks = marks.filter(t => now - t < WINDOW);
+        marks.push(now);
+        localStorage.setItem(KEY, JSON.stringify(marks));
+        if (marks.length > MAX && tok()) {
+          setTok(null);
+          localStorage.removeItem(KEY);
+          setTimeout(() => {
+            const el = document.getElementById('loginError');
+            if (el) { el.textContent = 'Too many refreshes detected — please sign in again for security.'; el.style.display = 'block'; }
+          }, 1200);
+        }
+      } catch (e) { }
     })();
 
     /* ===== API HELPER ===== */
@@ -7871,7 +7880,12 @@
               byId.delete(m.id);
             });
             T = fresh.concat(T.filter(t => byId.has(t.id)));
-            ['sent', 'drafts', 'spam'].forEach(f => { api('/api/mail?folder=' + f + '&limit=1000').then(l => { _foldCnts[f] = (l || []).length; uc(); }).catch(() => { }); });
+            // Skip the sent/drafts/spam count fetches while the backlog is draining —
+            // they refetch up to 1000 rows each cycle and are the main lag source.
+            // Refreshed once the drain completes.
+            if (!_partial) {
+              ['sent', 'drafts', 'spam'].forEach(f => { api('/api/mail?folder=' + f + '&limit=1000').then(l => { _foldCnts[f] = (l || []).length; uc(); }).catch(() => { }); });
+            }
             const sy = $('#set-sync'); if (sy) sy.textContent = 'Last sync: ' + new Date().toLocaleString();
             if (vst.view === 'security') return;
             rc(); rr(); uc();
@@ -7880,7 +7894,7 @@
         finally {
           _syncBusy = false;
           // Keep draining the backlog: retry in a few seconds if the last sync was time-boxed
-          if (_partial && LIVE && tok()) setTimeout(() => syncLive(true), 4000);
+          if (_partial && LIVE && tok()) setTimeout(() => syncLive(true), 6000);
         }
       })();
     }
@@ -8544,31 +8558,12 @@
       location.href = API_BASE + '/auth/gmail/start?redirect=' + redirect;
     }
 
-    async function pollSync(maxWait, interval) {
-      maxWait = maxWait || 60000; interval = interval || 2000;
-      const start = Date.now();
-      while (Date.now() - start < maxWait) {
-        try {
-          const st = await api('/api/sync');
-          if (st.status === 'done' || st.status === 'failed' || st.status === 'partial') return st;
-        } catch (e) { }
-        await new Promise(function (r) { setTimeout(r, interval); });
-      }
-      return api('/api/sync');
-    }
-
     async function initLiveMode() {
       let meData = null, syncData = null;
       try {
+        // Load identity + mailbox FIRST so the app renders instantly on refresh;
+        // the sync runs in the background (the drain loop in syncLive keeps pulling).
         meData = await api('/api/me');
-        // Trigger sync via POST — GET only checks status, POST actually starts the pull
-        try {
-          syncData = await api('/api/sync', { method: 'POST' });
-        } catch (e) {
-          if (e.code === 'GMAIL_NOT_CONNECTED') throw e;
-          // Sync may already be running (409) or failed to start — poll for status
-          syncData = await pollSync();
-        }
         const mailData = await api('/api/mail?folder=inbox&limit=1000');
 
         ME = meData;
@@ -8594,6 +8589,18 @@
         ['sent', 'drafts', 'spam'].forEach(f => {
           api('/api/mail?folder=' + f + '&limit=1000').then(l => { _foldCnts[f] = (l || []).length; uc(); }).catch(() => { });
         });
+
+        if (!meData.connected) {
+          // Signed in, but no Gmail account linked — keep session, show demo inbox + connect banner
+          showGmailConnectBanner();
+          return;
+        }
+        // Trigger sync via POST — GET only checks status, POST actually starts the pull.
+        // Fire-and-forget: never let the sync block the UI (on refresh the app is already live).
+        api('/api/sync', { method: 'POST' }).then(sd => {
+          syncData = sd;
+          updateSettingsAccount(meData, sd);
+        }).catch(() => { });
       } catch (e) {
         if (e && e.code === 401) {
           // Token invalid — go back to sign-in

@@ -526,8 +526,9 @@ def _service(account):
     # Socket-level timeout: without it a hung Gmail call stalls the page past Vercel's
     # function limit (asyncio.wait_for can't cancel the to_thread worker, so the loop
     # waited on the socket's default 60s). 10s caps every Gmail call at the socket.
-    # The authorized Http replaces the credentials= argument (they're mutually exclusive).
-    http = creds.authorize(httplib2.Http(timeout=10))
+    # AuthorizedHttp wraps creds + http (build() rejects http= and credentials= together).
+    from google_auth_httplib2 import AuthorizedHttp
+    http = AuthorizedHttp(creds, http=httplib2.Http(timeout=10))
     return build("gmail", "v1", cache_discovery=False, http=http), creds
 
 async def persist_refreshed(account, creds, db):

@@ -154,6 +154,19 @@ class Message(Base):
     classification = relationship("Classification", uselist=False, back_populates="message",
                                   cascade="all, delete-orphan", passive_deletes=True)
 
+class SecureMessage(Base):
+    """Link + passphrase secure message (ProtonMail-style). Ciphertext only —
+    decrypts in the recipient's browser with a passphrase shared out-of-band."""
+    __tablename__ = "secure_msgs"
+    id = Column(String(24), primary_key=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_addr = Column(String(255))
+    recipient_addr = Column(String(255))
+    subject = Column(Text, default="")
+    cipher_b64 = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
 class Classification(Base):
     __tablename__ = "classifications"
     message_id = Column(Integer, ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True)
@@ -1219,6 +1232,8 @@ class AttachmentIn(BaseModel):
 
 class SendIn(BaseModel):
     to: EmailStr; subject: str = ""; body: str = ""; name: str = ""; bcc: str = ""; autocrypt: str = ""; attachments: List[AttachmentIn] = []
+class SecureCreateIn(BaseModel):
+    to: EmailStr; subject: str = ""; cipher_b64: str
 class ReplyIn(BaseModel):
     body: str; autocrypt: str = ""
 class DraftIn(BaseModel):
@@ -2073,6 +2088,27 @@ async def mail_send(payload: SendIn, account: Account = Depends(get_current_acco
                 subject=payload.subject, snippet=(payload.body.splitlines() or [""])[0][:120], body=payload.body, folder="sent", is_read=True,
                 encrypted=_is_pgp(payload.body))
     db.add(m); await db.commit(); return {"ok": True, "id": m.id, "gmail_id": gid}
+
+# ============================ SECURE MESSAGES (link + passphrase, no keys) ============================
+@mail_router.post("/secure")
+async def secure_create(payload: SecureCreateIn, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
+    """Store ciphertext for a link-based secure message. The passphrase never
+    touches the server — the recipient decrypts in their browser."""
+    sid = _secrets.token_urlsafe(9)
+    db.add(SecureMessage(id=sid, account_id=account.id, sender_addr=account.email, recipient_addr=payload.to,
+                         subject=payload.subject, cipher_b64=payload.cipher_b64,
+                         expires_at=datetime.utcnow() + timedelta(days=7)))
+    await db.commit()
+    return {"id": sid}
+
+@mail_router.get("/secure/{sid}")
+async def secure_get(sid: str, db: AsyncSession = Depends(get_session)):
+    """Public: the recipient has no account. Only ciphertext + metadata."""
+    m = (await db.execute(select(SecureMessage).where(SecureMessage.id == sid))).scalar_one_or_none()
+    if not m or (m.expires_at and m.expires_at < datetime.utcnow()):
+        raise HTTPException(404, "Secure message not found or expired")
+    return {"subject": m.subject or "", "sender": m.sender_addr, "cipher_b64": m.cipher_b64,
+            "created_at": m.created_at.isoformat() if m.created_at else None}
 
 @mail_router.post("/{mid}/reply")
 async def mail_reply(mid: int, payload: ReplyIn, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):

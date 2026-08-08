@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prism Secure</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0b0b10; color: rgba(255,255,255,.92); font-family: Inter, system-ui, sans-serif;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    #box { width: 100%; max-width: 520px; background: #14141c; border: 1px solid rgba(255,255,255,.09); border-radius: 16px; padding: 32px; }
+    h1 { font-size: 20px; margin-bottom: 6px; }
+    .sub { color: rgba(255,255,255,.55); font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+    .meta { color: rgba(255,255,255,.7); font-size: 13px; margin-bottom: 16px; line-height: 1.6; }
+    .meta b { color: rgba(255,255,255,.95); }
+    input[type=password] {
+      width: 100%; background: #0b0b10; border: 1px solid rgba(255,255,255,.15); border-radius: 10px;
+      color: #fff; padding: 12px 14px; font-size: 15px; letter-spacing: 2px; outline: none;
+    }
+    input[type=password]:focus { border-color: rgba(139,92,246,.7); }
+    button {
+      width: 100%; margin-top: 12px; background: linear-gradient(135deg,#7c3aed,#4f46e5); border: 0; border-radius: 10px;
+      color: #fff; font-size: 15px; font-weight: 600; padding: 12px; cursor: pointer;
+    }
+    button:hover { filter: brightness(1.1); }
+    pre {
+      margin-top: 18px; background: #0b0b10; border: 1px solid rgba(255,255,255,.1); border-radius: 10px;
+      padding: 16px; white-space: pre-wrap; word-wrap: break-word; font-size: 14px; line-height: 1.6; display: none;
+    }
+    .err { color: #f87171; font-size: 13px; margin-top: 12px; display: none; }
+    .lock { font-size: 34px; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div id="box">
+    <div class="lock">🔒</div>
+    <h1>Secure message</h1>
+    <p class="sub">This message is end-to-end encrypted. Enter the passphrase the sender shared with you to read it.</p>
+    <div class="meta" id="meta">Loading…</div>
+    <input type="password" id="pass" placeholder="Passphrase" autocomplete="off">
+    <button id="open">Decrypt</button>
+    <p class="err" id="err"></p>
+    <pre id="msg"></pre>
+  </div>
+  <script>
+    (function () {
+      var id = new URLSearchParams(location.search).get('id');
+      var metaEl = document.getElementById('meta');
+      var passEl = document.getElementById('pass');
+      var btn = document.getElementById('open');
+      var errEl = document.getElementById('err');
+      var msgEl = document.getElementById('msg');
+      var data = null;
+      if (!id) { metaEl.textContent = 'Missing message id in the link.'; btn.style.display = 'none'; return; }
+      fetch('/api/mail/secure/' + encodeURIComponent(id)).then(function (r) {
+        if (r.status === 404) { metaEl.textContent = 'This secure message has expired or was never created.'; btn.style.display = 'none'; return null; }
+        if (!r.ok) { metaEl.textContent = 'Could not load the message (' + r.status + ').'; return null; }
+        return r.json();
+      }).then(function (j) {
+        if (!j) return;
+        data = j;
+        metaEl.innerHTML = '<b>' + esc(j.sender || 'unknown sender') + '</b> sent you an encrypted message' +
+          (j.created_at ? ' · ' + new Date(j.created_at).toLocaleString() : '');
+      }).catch(function () { metaEl.textContent = 'Network error — try again.'; });
+
+      function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+      function sha256(str) { return crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)); }
+      function bytesFromB64(b64) { var bin = atob(b64); var out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+
+      btn.onclick = function () {
+        if (!data) { errEl.style.display = 'block'; errEl.textContent = 'Message not loaded yet.'; return; }
+        var pass = passEl.value;
+        if (!pass) { errEl.style.display = 'block'; errEl.textContent = 'Enter the passphrase first.'; return; }
+        btn.disabled = true; btn.textContent = 'Decrypting…';
+        sha256(pass).then(function (hash) {
+          return crypto.subtle.importKey('raw', new Uint8Array(hash), { name: 'AES-GCM' }, false, ['decrypt']);
+        }).then(function (key) {
+          var d = bytesFromB64(data.cipher_b64);
+          return crypto.subtle.decrypt({ name: 'AES-GCM', iv: d.slice(0, 12) }, key, d.slice(12));
+        }).then(function (pt) {
+          msgEl.style.display = 'block';
+          msgEl.textContent = new TextDecoder().decode(pt);
+          passEl.style.display = 'none'; btn.style.display = 'none';
+          errEl.style.display = 'none';
+        }).catch(function () {
+          btn.disabled = false; btn.textContent = 'Decrypt';
+          errEl.style.display = 'block'; errEl.textContent = 'Wrong passphrase — check with the sender.';
+        });
+      };
+      passEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') btn.onclick(); });
+    })();
+  </script>
+</body>
+</html>

@@ -6499,7 +6499,7 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       </div>
       <div class="cmpfield"><label>Attachments</label><input type="file" id="cmpFiles" multiple><span id="cmpAttChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></span></div>
       <div class="cmpactions">
-        <label class="enc-toggle" title="Encrypt with PGP before sending — server stores ciphertext only"><input type="checkbox" id="cmpEnc"> 🔒 Encrypt (PGP)</label>
+        <label class="enc-toggle" title="End-to-end encrypt: PGP when the recipient's key is saved, otherwise a link + passphrase — server stores ciphertext only"><input type="checkbox" id="cmpEnc"> 🔒 Encrypt</label>
         <button class="btn bg" id="cmpCancelBtn">Cancel</button>
         <button class="btn bp2" id="cmpSendBtn">Send</button>
       </div>
@@ -8949,6 +8949,45 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       if (typeof renderPGPUI === 'function') renderPGPUI();
     }
 
+    /* ===== SECURE MESSAGES (link + passphrase — zero keys, WhatsApp-style UX) ===== */
+    async function _sha256(str) { return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))); }
+    function _b64FromBytes(bytes) { let bin = ''; const CH = 8192; for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode(...bytes.subarray(i, i + CH)); return btoa(bin); }
+    function _bytesFromB64(b64) { const bin = atob(b64); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+
+    async function secureEncrypt(pass, text) {
+      const key = await crypto.subtle.importKey('raw', await _sha256(pass), { name: 'AES-GCM' }, false, ['encrypt']);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text)));
+      const out = new Uint8Array(iv.length + ct.length);
+      out.set(iv, 0); out.set(ct, iv.length);
+      return _b64FromBytes(out);
+    }
+
+    async function secureDecrypt(pass, cipherB64) {
+      const data = _bytesFromB64(cipherB64);
+      const key = await crypto.subtle.importKey('raw', await _sha256(pass), { name: 'AES-GCM' }, false, ['decrypt']);
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: data.slice(0, 12) }, key, data.slice(12));
+      return new TextDecoder().decode(pt);
+    }
+
+    function securePassphrase() {
+      const ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      const rnd = crypto.getRandomValues(new Uint8Array(12));
+      return Array.from(rnd, b => ABC[b % ABC.length]).join('').replace(/(.{4})/g, '$1-').replace(/-$/, '');
+    }
+
+    async function secureSend(to, subj, body) {
+      const pass = securePassphrase();
+      const cipher_b64 = await secureEncrypt(pass, 'Subject: ' + subj + '\n\n' + body);
+      const r = await api('/api/mail/secure', { method: 'POST', body: { to, subject: subj, cipher_b64 } });
+      const url = location.origin + '/secure.html?id=' + r.id;
+      return {
+        pass, url,
+        subj: '🔒 Secure message from ' + (myName() || 'Prism user'),
+        notice: 'You received an end-to-end encrypted message.\n\nOpen it: ' + url + '\nEnter the passphrase the sender shares with you to read it.\n\n(Prism Secure — the server never sees the content.)'
+      };
+    }
+
     function wirePGPUI() {
       const gen = $('#pgpGen'); if (gen) gen.onclick = async () => {
         try {
@@ -9207,6 +9246,7 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
           else toast(undoMsg);
         };
         let outBody = body, outSubj = subj, outAtts = cmpAtts.map(a => ({ name: a.name, data_b64: a.data_b64 }));
+        let secureInfo = null;
         const encOn = $('#cmpEnc') && $('#cmpEnc').checked;
         if (LIVE && tok()) {
           if (encOn) {
@@ -9216,17 +9256,28 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
               outSubj = '🔒 Encrypted message'; // real subject travels inside the encrypted body
               outAtts = await encryptAttachments(cmpAtts, [to]); // attachments encrypted too — never plaintext
             } catch (e) {
-              btn.disabled = false; btn.textContent = 'Send';
-              toast('Encrypt failed: ' + (e && e.message || 'unknown error'));
-              return;
+              if ((e && e.message || '').indexOf('No saved public key') === 0 && !cmpAtts.length) {
+                // Zero-key fallback (WhatsApp-style): link + passphrase, no keys anywhere
+                try { secureInfo = await secureSend(to, subj || '(no subject)', body); outBody = secureInfo.notice; outSubj = secureInfo.subj; outAtts = []; }
+                catch (e2) { btn.disabled = false; btn.textContent = 'Send'; toast('Secure message failed: ' + (e2 && e2.message || 'unknown error')); return; }
+              } else {
+                btn.disabled = false; btn.textContent = 'Send';
+                toast('Encrypt failed: ' + (e && e.message || 'unknown error') + (cmpAtts.length ? ' (attachments need a saved PGP key — save the recipient key in Settings)' : ''));
+                return;
+              }
             }
           }
           const bcc = (typeof PS !== 'undefined' && PS && PS.autoBcc) ? PS.autoBcc : '';
           api('/api/mail/send', { method: 'POST', body: { to, subject: outSubj || '(no subject)', body: outBody, name: myName(), bcc, autocrypt: pgpAutocryptHeader(), attachments: outAtts } })
-            .then(() => finish('Message sent to ' + to + ' ✓', () => {
-              $('#cmpTo').value = to; $('#cmpSubj').value = subj; $('#cmpBody').value = body;
-              $('#cmpov').classList.add('open'); toast('Send undone — draft restored');
-            }))
+            .then(() => {
+              finish('Message sent to ' + to + ' ✓', () => {
+                $('#cmpTo').value = to; $('#cmpSubj').value = subj; $('#cmpBody').value = body;
+                $('#cmpov').classList.add('open'); toast('Send undone — draft restored');
+              });
+              if (secureInfo) {
+                window.prompt('Secure message sent. Send THIS LINK and THIS PASSPHRASE to ' + to + ' (ideally via different channels):', secureInfo.url + '\n\nPassphrase: ' + secureInfo.pass);
+              }
+            })
             .catch(err => {
               btn.disabled = false; btn.textContent = 'Send';
               toast('Send failed: ' + (err && err.body && err.body.detail ? JSON.stringify(err.body.detail) : err.message || 'check backend'));

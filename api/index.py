@@ -69,6 +69,7 @@ else:
 
     _ALLOWED_STATIC = {
         "prism.html",
+        "secure.html",
         "boot-splash.png",
         "boot-logo.jpg",
         "splash.mp4",

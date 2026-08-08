@@ -2619,6 +2619,32 @@ async def healthz(db: AsyncSession = Depends(get_session)):
         db_err = str(e)[:400]
     return {"ok": db_ok, "db": db_ok, "db_err": db_err, "llm": bool(settings.llm_api_key), "gmail": bool(settings.gmail_client_id), "enc_at_rest": _fernet is not None}
 
+# Google's favicon service returns a fixed globe placeholder (HTTP 200) for domains
+# it knows but has no favicon for — serve real logos only, skipping that placeholder.
+_LOGO_GLOBE_SHA = "63EFCFE9EEDA4CC58965C7587A485886612CBF878ECD8FC3E4DD594DB31A67FD"
+
+@app.get("/api/logo")
+async def logo_image(domain: str = Query("")):
+    d = (domain or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", d):
+        raise HTTPException(status_code=400, detail="bad domain")
+    if d == "googlemail.com": d = "google.com"
+    for url in (
+        f"https://www.google.com/s2/favicons?domain={d}&sz=128",
+        f"https://{d}/favicon.ico",
+    ):
+        try:
+            async with httpx.AsyncClient(timeout=8, follow_redirects=True) as hc:
+                r = await hc.get(url)
+            ct = r.headers.get("content-type", "")
+            if r.status_code == 200 and ct.startswith("image/") and len(r.content) > 200:
+                if hashlib.sha256(r.content).hexdigest().upper() == _LOGO_GLOBE_SHA:
+                    continue
+                return Response(content=r.content, media_type=ct, headers={"Cache-Control": "public, max-age=86400"})
+        except Exception:
+            continue
+    raise HTTPException(status_code=404, detail="no logo")
+
 # ============================ RUN ============================
 if os.environ.get("VERCEL"):
     # Vercel boots this module directly (FastAPI framework preset). Serve the

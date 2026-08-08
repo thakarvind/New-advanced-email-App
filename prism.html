@@ -6716,14 +6716,14 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
     /* ===== ROW RENDERER ===== */
     const PERS_DOMS = ['gmail.com', 'googlemail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com', 'icloud.com', 'me.com', 'proton.me', 'protonmail.com', 'aol.com', 'zoho.com', 'mail.com', 'gmx.com', 'yandex.com'];
     function logoFor(org) {
-      // Company mail (Google, Nvidia, Jobright…) gets the brand's real logo: the
-      // company's own /favicon.ico first, then Google's favicon service, then nothing
-      // (initials stay visible underneath). Never a generic globe.
+      // Company mail (Google, Nvidia, Jobright…) gets the brand's real, high-res logo:
+      // Google's favicon service at 128px first (404s for unknown domains → no globe),
+      // then the company's own /favicon.ico, then nothing (initials stay underneath).
       const dom = String(org || '').toLowerCase();
       if (!dom || PERS_DOMS.indexOf(dom) >= 0) return '';
       if (dom === String((typeof secEmail === 'function' ? secEmail() : '').split('@')[1] || '').toLowerCase()) return '';
       const d = dom === 'googlemail.com' ? 'google.com' : dom;
-      return '<img class="av-logo" alt="" loading="lazy" src="https://' + encodeURIComponent(d) + '/favicon.ico" onerror="if(this.src.indexOf(\'s2/favicons\')<0){this.src=\'https://www.google.com/s2/favicons?domain=' + encodeURIComponent(d) + '&sz=64\';}else{this.remove();}">';
+      return '<img class="av-logo" alt="" loading="lazy" src="https://www.google.com/s2/favicons?domain=' + encodeURIComponent(d) + '&sz=128" onerror="if(this.src.indexOf(\'favicon.ico\')<0){this.src=\'https://' + encodeURIComponent(d) + '/favicon.ico\';}else{this.remove();}">';
     }
     function rowHTML(t) {
       const name = t.from ? t.from.n : '?';

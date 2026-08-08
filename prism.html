@@ -6071,10 +6071,10 @@
           <div class="flt-item"><span><b>No key in this browser yet.</b></span><span style="display:flex;gap:8px;align-items:center"><input id="pgpPass" type="password" placeholder="Optional passphrase" style="width:170px"><button class="mini-btn" id="pgpGen">Generate keypair</button><button class="mini-btn" id="pgpImport">Import keypair</button></span></div>
         </div>
         <div class="flt-item"><span><b>Recipient keys</b> — save a public key to enable encrypted sending to that address.</span></div>
-        <div class="flt-item"><input id="pgpContactEmail" type="email" placeholder="friend@example.com" style="width:190px"><textarea id="pgpContactKey" rows="3" style="width:100%;font-family:var(--mono);font-size:11px" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea><button class="mini-btn" id="pgpAddContact">Save recipient key</button></div>
+        <div class="flt-item" style="flex-wrap:wrap"><input id="pgpContactEmail" type="email" placeholder="friend@example.com" style="width:190px"><textarea id="pgpContactKey" rows="3" style="flex:1;min-width:200px;font-family:var(--mono);font-size:11px" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea><button class="mini-btn" id="pgpAddContact">Save recipient key</button></div>
         <div class="flt-item" id="pgpContactList"></div>
         <div class="flt-item"><span><b>Local AI for encrypted mail</b> — your own key, called directly from this browser. The server never sees it or the decrypted content. Without it, encrypted mail gets no AI.</span></div>
-        <div class="flt-item"><input id="aiKey" type="password" placeholder="API key (sk-…)" style="width:220px"><input id="aiModel" placeholder="gpt-4o-mini" style="width:130px"><input id="aiEndpoint" placeholder="https://api.openai.com/v1/chat/completions" style="width:300px"><button class="mini-btn" id="aiSave">Save</button></div>
+        <div class="flt-item" style="flex-wrap:wrap"><input id="aiKey" type="password" placeholder="API key (sk-…)" style="width:220px"><input id="aiModel" placeholder="gpt-4o-mini" style="width:130px"><input id="aiEndpoint" placeholder="https://api.openai.com/v1/chat/completions" style="flex:1;min-width:200px"><button class="mini-btn" id="aiSave">Save</button></div>
       </div>
       <!-- Import mail and contacts -->
       <div class="setsec">
@@ -8381,6 +8381,7 @@
 
     function loadLiveBody(t) {
       api('/api/mail/' + t.id).then(async m => {
+        if (m && m.autocrypt) pgpSaveAutocrypt(m);
         if (m && m.body) {
           if (m.enc && pgpArmor(m.body)) {
             try {
@@ -8424,7 +8425,7 @@
         const body = pre ? pre.textContent : (t && (DRAFT_CACHE[t.id] || '') || '');
         if (LIVE && tok() && t) {
           const mid = t.id;
-          api('/api/mail/' + mid + '/reply', { method: 'POST', body: { body } })
+          api('/api/mail/' + mid + '/reply', { method: 'POST', body: { body, autocrypt: pgpAutocryptHeader() } })
             .then(() => { cm(); toast('Reply sent to ' + (t ? t.from.n : '') + ' ✓'); t.unread = 0; refresh(); uc(); })
             .catch(() => { b.disabled = false; b.textContent = 'Approve & send'; toast('Send failed — check backend.'); });
         } else {
@@ -8894,6 +8895,36 @@
       if (typeof updateEncBadge === 'function') updateEncBadge(typeof encAtRestLast !== 'undefined' && encAtRestLast);
     }
 
+    function pgpAutocryptHeader() {
+      // Autocrypt Level 1: our public key rides on every outgoing mail, so senders'
+      // clients auto-save it — no manual key exchange (https://autocrypt.org/level1.html)
+      if (!pgpPriv) return '';
+      try {
+        const pub = pgpPriv.toPublic().armor().replace(/-----BEGIN PGP PUBLIC KEY BLOCK-----|-----END PGP PUBLIC KEY BLOCK-----/g, '').replace(/\s+/g, '');
+        const email = (ME && ME.email) || ((pgpPriv.getUserIDs()[0] || '').replace(/.*<(.*)>.*/, '$1'));
+        return 'addr=' + email + '; base64=' + pub;
+      } catch (e) { console.warn('Autocrypt header failed:', e); return ''; }
+    }
+
+    function pgpSaveAutocrypt(m) {
+      // Incoming mail with an Autocrypt header: auto-save the sender's public key
+      if (!m || !m.autocrypt || !pgpPriv) return;
+      const am = m.autocrypt.match(/addr\s*=\s*"?([^";]+)"?/i);
+      const bm = m.autocrypt.match(/base64\s*=\s*([^;\s]+)/i);
+      if (!bm || !bm[1]) return;
+      const addr = ((am && am[1]) ? am[1] : m.from_addr || '').toLowerCase().trim();
+      if (!addr) return;
+      const b64 = bm[1].trim();
+      const armor = '-----BEGIN PGP PUBLIC KEY BLOCK-----\n' + b64.replace(/(.{64})/g, '$1\n') + '\n-----END PGP PUBLIC KEY BLOCK-----';
+      try { openpgp.readKey({ armoredKey: armor }); } catch (e) { console.warn('Invalid Autocrypt key from', addr); return; }
+      const contacts = JSON.parse(localStorage.getItem(LS_CONTACTS) || '{}');
+      if (contacts[addr] && contacts[addr].indexOf(b64) >= 0) return;
+      contacts[addr] = armor;
+      localStorage.setItem(LS_CONTACTS, JSON.stringify(contacts));
+      toast('Autocrypt: saved key for ' + addr + ' — you can now encrypt to them.');
+      if (typeof renderPGPUI === 'function') renderPGPUI();
+    }
+
     function wirePGPUI() {
       const gen = $('#pgpGen'); if (gen) gen.onclick = async () => {
         try {
@@ -9167,7 +9198,7 @@
             }
           }
           const bcc = (typeof PS !== 'undefined' && PS && PS.autoBcc) ? PS.autoBcc : '';
-          api('/api/mail/send', { method: 'POST', body: { to, subject: outSubj || '(no subject)', body: outBody, name: myName(), bcc, attachments: outAtts } })
+          api('/api/mail/send', { method: 'POST', body: { to, subject: outSubj || '(no subject)', body: outBody, name: myName(), bcc, autocrypt: pgpAutocryptHeader(), attachments: outAtts } })
             .then(() => finish('Message sent to ' + to + ' ✓', () => {
               $('#cmpTo').value = to; $('#cmpSubj').value = subj; $('#cmpBody').value = body;
               $('#cmpov').classList.add('open'); toast('Send undone — draft restored');

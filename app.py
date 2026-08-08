@@ -696,6 +696,7 @@ def parse_message(msg):
             "subject": _header(msg,"Subject"), "snippet": msg.get("snippet",""), "body": body,
             "received_at": received, "labels": msg.get("labelIds", []),
             "att_count": _att_count(payload), "att_names": _att_names(payload), "list_unsub": _header(msg, "List-Unsubscribe"),
+            "autocrypt": re.sub(r"\r?\n\s+", "", _header(msg, "Autocrypt")),
             "encrypted": _is_pgp(body)}
 
 def _is_pgp(body):
@@ -750,12 +751,14 @@ async def apply_snooze(account, gmail_id, db):
     except Exception as e: log.warning("snooze modify failed: %s", e)
     await persist_refreshed(account, creds, db)
 
-async def send_raw(account, to, subject, body, db, in_reply_to=None, references=None, from_addr=None, sender_name=None, bcc=None, attachments=None):
+async def send_raw(account, to, subject, body, db, in_reply_to=None, references=None, from_addr=None, sender_name=None, bcc=None, attachments=None, autocrypt=None):
     has_att = bool(attachments)
     msg = MIMEMultipart() if has_att else MIMEText(body, "plain", "utf-8")
     if has_att:
         msg.attach(MIMEText(body, "plain", "utf-8"))
     msg["To"] = to; msg["Subject"] = subject
+    if autocrypt:
+        msg["Autocrypt"] = autocrypt
     if bcc:
         msg["Bcc"] = bcc.strip()
     disp = (sender_name or "").strip() or account.display_name or ""
@@ -1215,9 +1218,9 @@ class AttachmentIn(BaseModel):
     name: str = "attachment"; data_b64: str = ""
 
 class SendIn(BaseModel):
-    to: EmailStr; subject: str = ""; body: str = ""; name: str = ""; bcc: str = ""; attachments: List[AttachmentIn] = []
+    to: EmailStr; subject: str = ""; body: str = ""; name: str = ""; bcc: str = ""; autocrypt: str = ""; attachments: List[AttachmentIn] = []
 class ReplyIn(BaseModel):
-    body: str
+    body: str; autocrypt: str = ""
 class DraftIn(BaseModel):
     body: str
 class StatePatch(BaseModel):
@@ -2001,22 +2004,26 @@ async def mail_get(mid: int, account: Account = Depends(get_current_account), db
     # Bodies are never stored (Gmail API traffic is free; DB egress is not).
     # Every open fetches the current body live from Gmail.
     d = mail_to_frontend(m)
-    d["body"] = await _live_body(m, account)
+    lf = await _live_full(m, account)
+    d["body"] = lf["body"]; d["autocrypt"] = lf["autocrypt"]; d["from_addr"] = m.from_addr
     cm = (await db.execute(select(Cluster.id).join(ClusterMember).where(ClusterMember.message_id == mid))).scalar_one_or_none()
     d["cluster"] = f"c{cm}" if cm else None; return d
 
-async def _live_body(m, account):
-    """Fetch the current message body from Gmail. Falls back to the DB body
+async def _live_full(m, account):
+    """Fetch the current message body + Autocrypt header from Gmail. Falls back to the DB body
     (legacy rows / no Gmail connection) — nothing is written back."""
     if not m.gmail_id or not (account.refresh_token or account.access_token):
-        return m.body or ""
+        return {"body": m.body or "", "autocrypt": ""}
     try:
         service, _ = _service(account)
         full = await bcall(get_full_by_service, service, m.gmail_id)
-        return full.get("body") or m.body or ""
+        return {"body": full.get("body") or m.body or "", "autocrypt": full.get("autocrypt") or ""}
     except Exception:
         log.warning("live body fetch failed for %s", m.gmail_id, exc_info=True)
-        return m.body or ""
+        return {"body": m.body or "", "autocrypt": ""}
+
+async def _live_body(m, account):
+    return (await _live_full(m, account))["body"]
 
 @mail_router.post("/{mid}/archive")
 async def mail_archive(mid: int, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
@@ -2061,7 +2068,7 @@ async def mail_draft(mid: int, payload: DraftIn, account: Account = Depends(get_
 async def mail_send(payload: SendIn, account: Account = Depends(get_current_account), db: AsyncSession = Depends(get_session)):
     if not account.refresh_token and not account.access_token: raise HTTPException(400, "Gmail not connected")
     send_name = (payload.name or "").strip() or account.display_name or account.email.split("@")[0]
-    gid = await send_raw(account, payload.to, payload.subject or "(no subject)", payload.body, db, from_addr=account.email, sender_name=send_name, bcc=payload.bcc or None, attachments=payload.attachments or None)
+    gid = await send_raw(account, payload.to, payload.subject or "(no subject)", payload.body, db, from_addr=account.email, sender_name=send_name, bcc=payload.bcc or None, attachments=payload.attachments or None, autocrypt=payload.autocrypt or None)
     m = Message(account_id=account.id, gmail_id=gid, from_name=send_name, from_addr=account.email, to_addr=payload.to,
                 subject=payload.subject, snippet=(payload.body.splitlines() or [""])[0][:120], body=payload.body, folder="sent", is_read=True,
                 encrypted=_is_pgp(payload.body))
@@ -2074,7 +2081,7 @@ async def mail_reply(mid: int, payload: ReplyIn, account: Account = Depends(get_
     subj = m.subject or ""
     if not subj.lower().startswith("re:"): subj = "Re: " + subj
     send_name = account.display_name or account.email.split("@")[0]
-    gid = await send_raw(account, m.from_addr, subj, payload.body, db, in_reply_to=m.message_id_header, references=m.message_id_header, from_addr=account.email, sender_name=send_name)
+    gid = await send_raw(account, m.from_addr, subj, payload.body, db, in_reply_to=m.message_id_header, references=m.message_id_header, from_addr=account.email, sender_name=send_name, autocrypt=payload.autocrypt or None)
     out = Message(account_id=account.id, gmail_id=gid, thread_id=m.thread_id, from_name=send_name, from_addr=account.email, to_addr=m.from_addr,
                   subject=subj, snippet=(payload.body.splitlines() or [""])[0][:120], body=payload.body, folder="sent", is_read=True,
                   encrypted=_is_pgp(payload.body))

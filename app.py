@@ -2661,7 +2661,10 @@ if os.environ.get("VERCEL"):
     @app.get("/{path:path}", include_in_schema=False)
     async def _serve_static(path: str):
         if path in _ALLOWED_STATIC and (_ROOT / path).is_file():
-            return FileResponse(_ROOT / path)
+            resp = FileResponse(_ROOT / path)
+            if path.endswith(".html"):
+                resp.headers["Cache-Control"] = "no-store"
+            return resp
         raise HTTPException(status_code=404, detail="Not found")
 
 if __name__ == "__main__":

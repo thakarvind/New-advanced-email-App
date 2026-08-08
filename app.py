@@ -2627,9 +2627,9 @@ if os.environ.get("VERCEL"):
     from fastapi.responses import FileResponse
     _ROOT = Path(__file__).resolve().parent
     _ALLOWED_STATIC = {
-        "prism.html", "boot-splash.png", "boot-logo.jpg", "splash.mp4",
+        "prism.html", "secure.html", "boot-splash.png", "boot-logo.jpg", "splash.mp4",
         "app icon neon.jpg", "Screenshot 2026-08-02 213509 borderless.png",
-        "Screenshot 2026-08-02 213509.png",
+        "Screenshot 2026-08-02 213509.png", "vendor/openpgp.min.js", "vendor/purify.min.js",
     }
 
     @app.get("/{path:path}", include_in_schema=False)

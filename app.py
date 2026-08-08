@@ -2624,8 +2624,8 @@ async def healthz(db: AsyncSession = Depends(get_session)):
 _LOGO_GLOBE_SHA = "63EFCFE9EEDA4CC58965C7587A485886612CBF878ECD8FC3E4DD594DB31A67FD"
 
 @app.get("/api/logo")
-async def logo_image(domain: str = Query("")):
-    d = (domain or "").strip().lower()
+async def logo_image(d: str = Query("")):
+    d = (d or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", d):
         raise HTTPException(status_code=400, detail="bad domain")
     if d == "googlemail.com": d = "google.com"

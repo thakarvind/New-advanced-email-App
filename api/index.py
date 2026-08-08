@@ -75,6 +75,8 @@ else:
         "app icon neon.jpg",
         "Screenshot 2026-08-02 213509 borderless.png",
         "Screenshot 2026-08-02 213509.png",
+        "vendor/openpgp.min.js",
+        "vendor/purify.min.js",
     }
 
     @_fastapi.get("/{path:path}", include_in_schema=False)

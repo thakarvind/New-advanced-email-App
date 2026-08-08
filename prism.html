@@ -6075,6 +6075,9 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
               <span><svg viewBox="0 0 24 24">
                   <polyline points="20 6 9 17 4 12" />
                 </svg> No plaintext secrets logged</span>
+              <span id="encAiRow"><svg viewBox="0 0 24 24">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg> Backend AI (Gemini) <span id="encAiTxt">checking…</span></span>
             </div>
             <div class="enc-foot">
               <span class="enc-live" id="encLive"><span class="led" id="encLed"></span><span id="encLiveTxt">status
@@ -6092,13 +6095,9 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
           <div class="flt-item"><span><b>Active key</b> <code id="pgpFpr"></code></span><button class="mini-btn" id="pgpCopyPub">Copy public key</button><button class="mini-btn" id="pgpExport">Export private key</button><button class="mini-btn" id="pgpDel">Remove key</button></div>
         </div>
         <div id="pgpNoKey" hidden>
-          <div class="flt-item"><span><b>No key in this browser yet.</b></span><span style="display:flex;gap:8px;align-items:center"><input id="pgpPass" type="password" placeholder="Optional passphrase" style="width:170px"><button class="mini-btn" id="pgpGen">Generate keypair</button><button class="mini-btn" id="pgpImport">Import keypair</button></span></div>
+          <div class="flt-item"><span><b>No key in this browser yet.</b></span><span style="display:flex;gap:8px;align-items:center"><input id="pgpPass" type="password" placeholder="Optional passphrase" class="set-input" style="width:170px"><button class="mini-btn" id="pgpGen">Generate keypair</button><button class="mini-btn" id="pgpImport">Import keypair</button></span></div>
         </div>
-        <div class="flt-item"><span><b>Recipient keys</b> — save a public key to enable encrypted sending to that address.</span></div>
-        <div class="flt-item" style="flex-wrap:wrap"><input id="pgpContactEmail" type="email" placeholder="friend@example.com" style="width:190px"><textarea id="pgpContactKey" rows="3" style="flex:1;min-width:200px;font-family:var(--mono);font-size:11px" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea><button class="mini-btn" id="pgpAddContact">Save recipient key</button></div>
-        <div class="flt-item" id="pgpContactList"></div>
-        <div class="flt-item"><span><b>Local AI for encrypted mail</b> — your own key, called directly from this browser. The server never sees it or the decrypted content. Without it, encrypted mail gets no AI.</span></div>
-        <div class="flt-item" style="flex-wrap:wrap"><input id="aiKey" type="password" placeholder="API key (sk-…)" style="width:220px"><input id="aiModel" placeholder="gpt-4o-mini" style="width:130px"><input id="aiEndpoint" placeholder="https://api.openai.com/v1/chat/completions" style="flex:1;min-width:200px"><button class="mini-btn" id="aiSave">Save</button></div>
+        <div class="setsec-hint">Recipient keys are exchanged automatically — opening mail from anyone with a key (PGP or Autocrypt) saves it silently in this browser, no manual entry.</div>
       </div>
       <!-- Import mail and contacts -->
       <div class="setsec">
@@ -8412,15 +8411,8 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
               const plain = await decryptBody(m.body);
               BODY_CACHE[t.id] = plain;
               if (vst._open && vst._open.id === t.id) renderCachedBody(t);
-              const cfg = JSON.parse(localStorage.getItem(LS_AIKEY) || 'null');
-              if (cfg && cfg.key) {
-                const c = await localClassify(plain);
-                const el = $('#encLocalAI');
-                if (c && el && vst._open && vst._open.id === t.id) {
-                  const pr = { needs_reply: 'Needs reply', waiting: 'Waiting on you', fyi: 'FYI', noise: 'Noise' }[c.priority] || c.priority;
-                  el.innerHTML = '<div class="ac"><div class="al pk">' + sp + ' Local AI (browser, your key)</div><p class="acp"><b>' + esc(String(pr)) + '</b> — ' + esc(String(c.summary || '')) + '</p></div>';
-                } else if (el) { el.innerHTML = '<div class="ac"><div class="al gy">' + sp + ' Local AI unavailable</div><p class="acp">Set an AI key in Settings to classify encrypted mail in-browser.</p></div>'; }
-              }
+              const el = $('#encLocalAI');
+              if (el) el.innerHTML = '<div class="ac"><div class="al gy">' + sp + ' No AI for encrypted mail</div><p class="acp">Encrypted content stays private — the server cannot read it, so no classification. Cleartext mail uses the backend Gemini model.</p></div>';
             } catch (e) {
               BODY_CACHE[t.id] = '🔒 Encrypted message — cannot decrypt in this browser. ' + (e && e.message || '');
               if (vst._open && vst._open.id === t.id) renderCachedBody(t);
@@ -8695,6 +8687,10 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
         const _ct0 = $('#ct'); if (_ct0 && !_ct0.innerHTML.trim()) _ct0.innerHTML = '<div class="emptyrow">Loading messages…</div>';
         updateSettingsAccount(meData, null);
         updateEncBadge(meData.enc_at_rest);
+        fetch(API_BASE + '/healthz').then(r => r.json()).then(h => {
+          const aiTxt = $('#encAiTxt');
+          if (aiTxt) aiTxt.innerHTML = h.llm ? '<b style="color:var(--teal)">configured</b>' : '<b style="color:var(--faint)">no key set in server env</b>';
+        }).catch(() => { const aiTxt = $('#encAiTxt'); if (aiTxt) aiTxt.textContent = 'unreachable'; });
         $('#tbenv').innerHTML = 'LIVE · GMAIL · <b>' + esc(meData.email.split('@')[0]) + '</b>';
         $('#sfn').textContent = meData.email || 'Connected';
         const sfav = $('#sfav'); sfav.textContent = ini(meData.email.split('@')[0]);
@@ -8808,7 +8804,7 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
     }
 
     /* ===== PGP END-TO-END ENCRYPTION (browser-held keys) ===== */
-    const LS_PRIV = 'prism_pgp_priv', LS_CONTACTS = 'prism_pgp_contacts', LS_AIKEY = 'prism_ai_key';
+    const LS_PRIV = 'prism_pgp_priv', LS_CONTACTS = 'prism_pgp_contacts';
     let pgpPriv = null, pgpPass = '';
     function pgpArmor(str) { return (str || '').includes('-----BEGIN PGP MESSAGE-----'); }
 
@@ -8881,23 +8877,6 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       return out;
     }
 
-    async function localClassify(text) {
-      const cfg = JSON.parse(localStorage.getItem(LS_AIKEY) || 'null');
-      if (!cfg || !cfg.key) return null;
-      try {
-        const r = await fetch(cfg.endpoint || 'https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.key },
-          body: JSON.stringify({ model: cfg.model || 'gpt-4o-mini', messages: [
-            { role: 'system', content: 'Classify an email. Reply with ONLY JSON: {"priority":"needs_reply|waiting|fyi|noise","summary":"one line"}' },
-            { role: 'user', content: text.slice(0, 8000) }] })
-        });
-        const j = await r.json();
-        const c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
-        return JSON.parse(c.replace(/```json|```/g, '').trim());
-      } catch (e) { console.warn('local AI failed:', e); return null; }
-    }
-
     function renderPGPUI() {
       const hasKey = !!localStorage.getItem(LS_PRIV);
       const hk = $('#pgpHasKey'), nk = $('#pgpNoKey');
@@ -8905,17 +8884,6 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       if (nk) nk.hidden = hasKey;
       const fpr = $('#pgpFpr');
       if (fpr) fpr.textContent = hasKey ? (pgpPriv ? pgpPriv.getFingerprint().slice(0, 16) : 'key present') : '';
-      const list = $('#pgpContactList');
-      if (list) {
-        const contacts = JSON.parse(localStorage.getItem(LS_CONTACTS) || '{}');
-        const keys = Object.keys(contacts);
-        list.innerHTML = keys.length ? '<span>Saved: ' + keys.map(k => '<code>' + esc(k) + '</code>').join(' · ') + '</span>' : '<span style="color:var(--faint)">No recipient keys saved.</span>';
-      }
-      const aiKey = $('#aiKey'), aiModel = $('#aiModel'), aiEndpoint = $('#aiEndpoint');
-      const cfg = JSON.parse(localStorage.getItem(LS_AIKEY) || 'null');
-      if (aiKey) aiKey.value = (cfg && cfg.key) || '';
-      if (aiModel) aiModel.value = (cfg && cfg.model) || 'gpt-4o-mini';
-      if (aiEndpoint) aiEndpoint.value = (cfg && cfg.endpoint) || 'https://api.openai.com/v1/chat/completions';
       if (typeof updateEncBadge === 'function') updateEncBadge(typeof encAtRestLast !== 'undefined' && encAtRestLast);
     }
 
@@ -9020,26 +8988,6 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
           renderPGPUI(); updateEncBadge(encAtRestLast); toast('Key removed.');
         }
       };
-      const addC = $('#pgpAddContact'); if (addC) addC.onclick = async () => {
-        const em = $('#pgpContactEmail').value.trim().toLowerCase();
-        const armor = $('#pgpContactKey').value.trim();
-        if (!em || !armor) { toast('Enter an email and a public key.'); return; }
-        try {
-          await openpgp.readKey({ armoredKey: armor });
-          const contacts = JSON.parse(localStorage.getItem(LS_CONTACTS) || '{}');
-          contacts[em] = armor;
-          localStorage.setItem(LS_CONTACTS, JSON.stringify(contacts));
-          $('#pgpContactKey').value = '';
-          renderPGPUI(); toast('Key saved for ' + em);
-        } catch (e) { toast('Invalid public key.'); }
-      };
-      const aiSave = $('#aiSave'); if (aiSave) aiSave.onclick = () => {
-        localStorage.setItem(LS_AIKEY, JSON.stringify({
-          key: $('#aiKey').value.trim(), model: $('#aiModel').value.trim() || 'gpt-4o-mini',
-          endpoint: $('#aiEndpoint').value.trim() || 'https://api.openai.com/v1/chat/completions'
-        }));
-        toast('Local AI settings saved (browser only).');
-      };
     }
 
     /* ===== ACCOUNTS: PROFILE LINKS / IMPORT / DELEGATION ===== */
@@ -9059,6 +9007,8 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
           const r = await fetch(API_BASE + '/healthz', { cache: 'no-store' });
           const j = await r.json();
           updateEncBadge(!!(j && j.enc_at_rest));
+          const aiTxt = $('#encAiTxt');
+          if (aiTxt) aiTxt.innerHTML = j && j.llm ? '<b style="color:var(--teal)">configured</b>' : '<b style="color:var(--faint)">no key set in server env</b>';
           toast((j && j.enc_at_rest) ? 'At-rest encryption verified.' : 'At-rest key missing.');
         } catch (e) { toast('Health check failed — server unreachable.'); }
         encRefresh.disabled = false; encRefresh.textContent = 'Check';
@@ -9750,6 +9700,8 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       // No token — show sign-in gate; ping healthz to check status
       fetch(API_BASE + '/healthz').then(r => r.json()).then(h => {
         updateEncBadge(h.enc_at_rest);
+        const aiTxt = $('#encAiTxt');
+        if (aiTxt) aiTxt.innerHTML = h.llm ? '<b style="color:var(--teal)">configured</b>' : '<b style="color:var(--faint)">no key set in server env</b>';
         if (!h.gmail) {
           showLoginError('Google OAuth is not configured on the backend. Please check GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET in your backend .env file.');
         }

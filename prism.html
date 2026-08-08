@@ -6734,7 +6734,7 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       const sentChip = t.folder === 'sent' && t.ts && Date.now() - t.ts < 24 * 3600e3 ? '<span class="undochip" title="Undo send available">↩ ' + (t.ts ? Math.max(1, Math.round((24 * 3600e3 - (Date.now() - t.ts)) / 3600e3)) : 24) + 'h left</span>' : '';
       return '<div class="row' + (selSet.has(t.id) ? ' sel' : '') + '" data-id="' + t.id + '">' + (t.unread ? '<span class="ud"></span>' : '') + '<span class="swl"></span>' +
         '<button class="cx" data-cx="' + t.id + '" title="Select">✓</button>' +
-        '<span class="av" style="--c:' + color + '">' + initials + logoFor(org) + '</span>' +
+        '<span class="av" style="--c:' + color + '">' + initials + logoFor(t.logodom || t.co) + '</span>' +
         '<div class="rm"><div class="rt"><span class="fr">' + esc(name) + '</span><span class="og">· ' + esc(org) + '</span>' +
         '<button class="rdel" data-del="' + t.id + '" title="Delete"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>' +
         (vst.folder === 'trash' ? '<button class="rst" data-restore="' + t.id + '" title="Restore to Inbox">↩</button>' : '') + tag +
@@ -8055,7 +8055,7 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       const note = '<div class="an">🛡 Human-in-the-loop: nothing is sent, archived, or deleted without your explicit approval.</div>';
       $('#md').innerHTML = '<button class="mc" data-act="close">✕</button>' +
         '<button class="xpand" data-act="xpand" title="Expand email layout">⤢</button>' +
-        '<div class="mp"><div class="mhead"><span class="av" style="--c:' + color + ';width:40px;height:40px;font-size:13px">' + initials + logoFor(t.co) + '</span>' +
+        '<div class="mp"><div class="mhead"><span class="av" style="--c:' + color + ';width:40px;height:40px;font-size:13px">' + initials + logoFor(t.logodom || t.co) + '</span>' +
         '<div><div class="mf">' + esc(name) + ' <span class="morg">· ' + esc(t.co || '') + '</span></div>' +
         '<div class="mmeta">to me · ' + (dayOf(t) ? esc(dayOf(t)) + ' ' : '') + esc(exactTime(t)) + '</div></div>' +
         (t.unsub ? '<button class="unsubhdr" data-act="unsub" title="Unsubscribe from this sender">' + svgUnsub + '<span>Unsubscribe</span></button>' : '') + '</div>' +
@@ -8634,7 +8634,7 @@ var openpgp=function(e){"use strict";const t="undefined"!=typeof window?window:"
       return {
         id: m.id, cluster: m.cluster,
         from: { n: m.from.n, ini: m.from.ini, h: m.from.h, neu: m.from.neu },
-        dom: m.dom, co: m.co, tag: m.tag, subj: m.subj, snip: m.snip,
+        dom: m.dom, co: m.co, logodom: m.logodom, tag: m.tag, subj: m.subj, snip: m.snip,
         time: m.time, day: m.day,
         unread: m.unread, star: m.star, pr: m.pr,
         topic: m.topic, w: m.pr === 'waiting', cat: m.cat,

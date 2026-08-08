@@ -315,7 +315,7 @@ def mail_to_frontend(m):
     cats = [_CATEGORY[l] for l in (m.raw_labels or "").split(",") if l in _CATEGORY]
     return {"id": m.id, "folder": m.folder,
             "from": {"n": name, "ini": _initials(m.from_name, m.from_addr), "h": _hash_hue(m.from_addr or name), "neu": 1 if _is_neu(m.from_addr, name) else 0},
-            "co": pretty_domain(m.from_addr), "dom": _host_of(m.from_addr), "tag": _PR_TO_TAG.get(priority),
+            "co": pretty_domain(m.from_addr), "dom": _host_of(m.from_addr), "logodom": _registrable(_host_of(m.from_addr)), "tag": _PR_TO_TAG.get(priority),
             "subj": m.subject or "(no subject)", "snip": m.snippet or "", "time": time_s, "day": day_s,
             "unread": 0 if m.is_read else 1, "star": 1 if m.is_starred else 0, "pr": pr, "cluster": None,
             "d": _depth(m), "to": m.to_addr, "enc": bool(m.encrypted),
